@@ -1,0 +1,13 @@
+Hello, CFTFF Visual File Storage System!
+
+This is a test file to demonstrate encoding and decoding.
+It contains multiple lines of text to ensure the system works correctly.
+
+Features:
+- Binary-safe encoding
+- Loss-tolerant visual mapping
+- Optional RSA encryption
+- Bit-perfect restoration
+- Configurable color palette
+
+The system should be able to restore this file exactly as it was encoded.
