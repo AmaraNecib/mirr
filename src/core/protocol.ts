@@ -26,8 +26,11 @@ export async function buildGlobalHeader(
 export async function serializeHeader(header: GlobalHeader): Promise<Uint8Array> {
   const encoder = new TextEncoder();
   
+  // Magic bytes are already encoded
+  const magicBytes = header.magic;
+  
   // Serialize config
-  const configData = new Uint8Array(24);
+  const configData = new Uint8Array(25);
   const configView = new DataView(configData.buffer);
   configView.setUint32(0, header.config.paletteSize, false);
   configView.setUint32(4, header.config.blockSize, false);
@@ -36,6 +39,7 @@ export async function serializeHeader(header: GlobalHeader): Promise<Uint8Array>
   configView.setUint8(16, header.config.encrypted ? 1 : 0);
   configView.setUint32(17, header.config.version, false);
   configView.setUint8(21, header.encryptionEnabled ? 1 : 0);
+  configView.setUint8(22, header.config.compressed ? 1 : 0);
   
   // Serialize metadata
   const metadataBytes = serializeMetadata(header.metadata);
@@ -45,7 +49,7 @@ export async function serializeHeader(header: GlobalHeader): Promise<Uint8Array>
   
   // Calculate total size
   const totalSize =
-    header.magic.length +
+    magicBytes.length +
     4 + // version
     configData.length +
     4 + // metadata length
@@ -58,8 +62,8 @@ export async function serializeHeader(header: GlobalHeader): Promise<Uint8Array>
   let offset = 0;
   
   // Write magic bytes
-  buffer.set(header.magic, offset);
-  offset += header.magic.length;
+  buffer.set(magicBytes, offset);
+  offset += magicBytes.length;
   
   // Write version
   new DataView(buffer.buffer).setUint32(offset, header.version, false);
@@ -99,97 +103,5 @@ export async function buildFrame(
     payloadLength: payload.length,
     payload,
     checksum,
-  };
-}
-
-/** Serialize frame to bytes */
-export async function serializeFrame(frame: Frame): Promise<Uint8Array> {
-  const encoder = new TextEncoder();
-  const checksumBytes = encoder.encode(frame.checksum);
-  
-  const totalSize =
-    4 + // index
-    4 + // payload length
-    frame.payload.length +
-    4 + // checksum length
-    checksumBytes.length;
-  
-  const buffer = new Uint8Array(totalSize);
-  const view = new DataView(buffer.buffer);
-  let offset = 0;
-  
-  // Write index
-  view.setUint32(offset, frame.index, false);
-  offset += 4;
-  
-  // Write payload length
-  view.setUint32(offset, frame.payloadLength, false);
-  offset += 4;
-  
-  // Write payload
-  buffer.set(frame.payload, offset);
-  offset += frame.payload.length;
-  
-  // Write checksum
-  view.setUint32(offset, checksumBytes.length, false);
-  offset += 4;
-  buffer.set(checksumBytes, offset);
-  
-  return buffer;
-}
-
-/** Split data into frames */
-export async function splitIntoFrames(
-  data: Uint8Array,
-  bytesPerFrame: number
-): Promise<Frame[]> {
-  const frames: Frame[] = [];
-  let offset = 0;
-  let index = 0;
-  
-  while (offset < data.length) {
-    const chunkSize = Math.min(bytesPerFrame, data.length - offset);
-    const payload = data.slice(offset, offset + chunkSize);
-    
-    const frame = await buildFrame(index, payload);
-    frames.push(frame);
-    
-    offset += chunkSize;
-    index++;
-  }
-  
-  return frames;
-}
-
-/** Build complete encoded data structure */
-export async function buildEncodedData(
-  config: EncodingConfig,
-  metadata: FileMetadata,
-  data: Uint8Array,
-  encryptionEnabled: boolean
-): Promise<EncodedData> {
-  const globalChecksum = await calculateChecksum(data);
-  
-  const header = await buildGlobalHeader(
-    config,
-    metadata,
-    data.length,
-    globalChecksum,
-    encryptionEnabled
-  );
-  
-  // Calculate bytes per frame based on symbols per frame
-  const blocksX = Math.floor(config.frameWidth / config.blockSize);
-  const blocksY = Math.floor(config.frameHeight / config.blockSize);
-  const symbolsPerFrame = blocksX * blocksY;
-  const bitsPerSymbol = Math.ceil(Math.log2(config.paletteSize));
-  const bytesPerFrame = Math.floor((symbolsPerFrame * bitsPerSymbol) / 8);
-  
-  const frames = await splitIntoFrames(data, bytesPerFrame);
-  
-  return {
-    header,
-    frames,
-    endMarker: DEFAULT_CONFIG.END_MARKER,
   };
 }

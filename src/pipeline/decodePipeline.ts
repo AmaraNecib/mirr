@@ -1,13 +1,17 @@
-import type { DecodeOptions, PipelineResult } from "../types/index.ts";
+import type { DecodeOptions, PipelineResult, VisualBlock } from "../types/index.ts";
 import { writeFile } from "../core/fileReader.ts";
 import { createEncryptionService } from "../core/encryption.ts";
 import { loadEnv } from "../config/settings.ts";
-import { deserializeHeader, deserializeFrame } from "../core/decoder.ts";
+import { deserializeHeader } from "../core/decoder.ts";
 import { decodeFromSymbols } from "../core/encoder.ts";
 import { blocksToSymbols } from "../core/visualMapper.ts";
 import { generatePalette } from "../utils/palette.ts";
 import { readFrames } from "../utils/imageWriter.ts";
-import { verifyChecksum } from "../utils/checksum.ts";
+import { calculateChecksum, verifyChecksum } from "../utils/checksum.ts";
+import { decompress } from "../utils/compression.ts";
+import { extractArchive } from "../utils/archive.ts";
+import { getOptimalThreadCount, parallelMap } from "../utils/threading.ts";
+import { ProgressTracker } from "../utils/progress.ts";
 
 /** Main decoding pipeline */
 export async function decodePipeline(
@@ -16,90 +20,83 @@ export async function decodePipeline(
   try {
     console.log("Starting decoding pipeline...");
     
+    const threads = getOptimalThreadCount(options.threads);
+    console.log(`Using ${threads} threads for parallel processing`);
+    
     // Step 1: Generate palette
     const palette = generatePalette(options.paletteSize);
     
-    // Step 2: Read all frames
-    console.log(`Reading frames from: ${options.inputPath}`);
+    // Step 2: Read all frames from input directory
+    console.log(`Reading from: ${options.inputPath}`);
     const allBlocks = await readFrames(
       options.inputPath,
       options.blockSize,
       palette
     );
     
-    if (allBlocks.length === 0) {
+    if (allBlocks.length === 0 || allBlocks[0].length === 0) {
       throw new Error("No frames found in input directory");
     }
     
-    console.log(`Found ${allBlocks.length} frames`);
+    console.log(`Found ${allBlocks.length} frame(s)`);
     
-    // Step 3: Extract header from first frame
-    console.log("Decoding header...");
-    const headerBlocks = allBlocks[0];
-    const headerSymbols = blocksToSymbols(headerBlocks, palette);
+    // Step 3: Decode all frames into continuous byte stream
+    console.log("Decoding frames...");
     
-    // Calculate how many bytes we can decode from available symbols
-    const bitsPerSymbol = Math.ceil(Math.log2(palette.size));
-    const totalBits = headerSymbols.length * bitsPerSymbol;
-    const maxBytes = Math.floor(totalBits / 8);
+    const progress = options.showProgress ? new ProgressTracker(allBlocks.length, "Decoding frames", true) : null;
+    let completed = 0;
     
-    // Decode header bytes
-    let headerBytes = decodeFromSymbols(headerSymbols, palette.size, maxBytes);
-    const { header, bytesRead } = deserializeHeader(headerBytes);
+    const allFrameBytes = await parallelMap(
+      allBlocks,
+      async (blocks) => {
+        const symbols = blocksToSymbols(blocks, palette);
+        const bitsPerSymbol = Math.ceil(Math.log2(palette.size));
+        const totalBits = symbols.length * bitsPerSymbol;
+        const maxBytes = Math.floor(totalBits / 8);
+        const result = decodeFromSymbols(symbols, palette.size, maxBytes);
+        
+        // Update progress
+        if (progress) {
+          completed++;
+          progress.update(completed);
+        }
+        
+        return result;
+      },
+      threads
+    );
+    
+    // Combine all frame bytes into single stream
+    const totalLength = allFrameBytes.reduce((sum, fb) => sum + fb.length, 0);
+    const allBytes = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const frameBytes of allFrameBytes) {
+      allBytes.set(frameBytes, offset);
+      offset += frameBytes.length;
+    }
+    
+    // Step 4: Deserialize header from beginning of byte stream
+    console.log("Reading header...");
+    const { header, bytesRead } = deserializeHeader(allBytes);
     
     console.log(`Original file: ${header.metadata.name}`);
     console.log(`File size: ${header.metadata.size} bytes`);
     console.log(`Encryption: ${header.encryptionEnabled ? "enabled" : "disabled"}`);
-    
-    // Step 4: Decode data frames
-    console.log("Decoding data frames...");
-    const dataFrames = allBlocks.slice(1);
-    const allPayloads: Uint8Array[] = [];
-    
-    for (let i = 0; i < dataFrames.length; i++) {
-      const blocks = dataFrames[i];
-      const symbols = blocksToSymbols(blocks, palette);
-      
-      // Calculate max bytes we can decode
-      const bitsPerSymbol = Math.ceil(Math.log2(palette.size));
-      const totalBits = symbols.length * bitsPerSymbol;
-      const maxBytes = Math.floor(totalBits / 8);
-      
-      // Decode frame
-      const frameBytes = decodeFromSymbols(symbols, palette.size, maxBytes);
-      const { frame } = deserializeFrame(frameBytes);
-      
-      // Verify frame checksum
-      const isValid = await verifyChecksum(frame.payload, frame.checksum);
-      if (!isValid) {
-        console.warn(`Warning: Frame ${i} checksum mismatch`);
-      }
-      
-      allPayloads.push(frame.payload);
-    }
-    
-    // Step 5: Combine payloads
-    const totalLength = allPayloads.reduce((sum, p) => sum + p.length, 0);
-    const combinedData = new Uint8Array(totalLength);
-    let offset = 0;
-    
-    for (const payload of allPayloads) {
-      combinedData.set(payload, offset);
-      offset += payload.length;
-    }
-    
-    // Trim to actual data length
-    const actualData = combinedData.slice(0, header.totalDataLength);
+    console.log(`Compression: ${header.config.compressed ? "enabled" : "disabled"}`);    
+    // Step 5: Extract data from remaining bytes (no frame deserialization needed)
+    console.log("Extracting data...");
+    const dataLength = header.totalDataLength;
+    const dataBytes = allBytes.slice(bytesRead, bytesRead + dataLength);
     
     // Step 6: Verify global checksum
     console.log("Verifying checksum...");
-    const isValid = await verifyChecksum(actualData, header.globalChecksum);
+    const isValid = await verifyChecksum(dataBytes, header.globalChecksum);
     if (!isValid) {
       console.warn("Warning: Global checksum mismatch");
     }
     
     // Step 7: Optional decryption
-    let finalData = actualData;
+    let finalData = dataBytes;
     if (header.encryptionEnabled) {
       console.log("Decrypting data...");
       const env = loadEnv();
@@ -114,15 +111,32 @@ export async function decodePipeline(
         privateKey: env.RSA_PRIVATE_KEY,
       });
       
-      const decrypted = await encryptionService.decrypt(actualData);
+      const decrypted = await encryptionService.decrypt(dataBytes);
       finalData = new Uint8Array(decrypted.buffer as ArrayBuffer);
     }
     
-    // Step 8: Write output file
-    console.log(`Writing file: ${options.outputFile}`);
-    await writeFile(options.outputFile, finalData);
+    // Step 8: Optional decompression
+    if (header.config.compressed) {
+      console.log("Decompressing data...");
+      const decompressed = decompress(finalData);
+      finalData = new Uint8Array(decompressed.buffer as ArrayBuffer);
+    }
     
-    console.log(`✓ Successfully decoded file`);
+    // Step 9: Write output file or extract archive
+    // Auto-extract archives by default (unless extractArchive is explicitly false)
+    const isArchive = header.metadata.mimeType === "application/x-cftff-archive";
+    const shouldExtract = isArchive && options.extractArchive !== false;
+    
+    if (shouldExtract) {
+      console.log(`Detected archive - extracting to: ${options.outputFile}`);
+      await extractArchive(finalData, options.outputFile);
+      console.log(`✓ Successfully extracted archive`);
+    } else {
+      console.log(`Writing file: ${options.outputFile}`);
+      await writeFile(options.outputFile, finalData);
+      console.log(`✓ Successfully decoded file`);
+    }
+    
     console.log(`  Original name: ${header.metadata.name}`);
     console.log(`  Size: ${finalData.length} bytes`);
     

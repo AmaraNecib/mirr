@@ -41,7 +41,9 @@ export function deserializeHeader(data: Uint8Array): {
   offset += 4;
   const encryptionEnabled = view.getUint8(offset) === 1;
   offset += 1;
-  // Skip padding bytes (config is 24 bytes total, we've read 22)
+  const compressed = view.getUint8(offset) === 1;
+  offset += 1;
+  // Skip padding bytes (config is 25 bytes total, we've read 23)
   offset += 2;
   
   const config: EncodingConfig = {
@@ -50,6 +52,7 @@ export function deserializeHeader(data: Uint8Array): {
     frameWidth,
     frameHeight,
     encrypted,
+    compressed,
     version: configVersion,
   };
   
@@ -79,45 +82,6 @@ export function deserializeHeader(data: Uint8Array): {
       totalDataLength,
       globalChecksum,
       encryptionEnabled,
-    },
-    bytesRead: offset,
-  };
-}
-
-/** Deserialize frame from bytes */
-export function deserializeFrame(data: Uint8Array): {
-  frame: Frame;
-  bytesRead: number;
-} {
-  const decoder = new TextDecoder();
-  // Use data buffer directly with proper offset
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  let offset = 0;
-  
-  // Read index
-  const index = view.getUint32(offset, false);
-  offset += 4;
-  
-  // Read payload length
-  const payloadLength = view.getUint32(offset, false);
-  offset += 4;
-  
-  // Read payload
-  const payload = data.slice(offset, offset + payloadLength);
-  offset += payloadLength;
-  
-  // Read checksum
-  const checksumLength = view.getUint32(offset, false);
-  offset += 4;
-  const checksum = decoder.decode(data.slice(offset, offset + checksumLength));
-  offset += checksumLength;
-  
-  return {
-    frame: {
-      index,
-      payloadLength,
-      payload,
-      checksum,
     },
     bytesRead: offset,
   };

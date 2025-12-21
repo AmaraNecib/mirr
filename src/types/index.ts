@@ -30,6 +30,7 @@ export interface EncodingConfig {
   frameWidth: number;
   frameHeight: number;
   encrypted: boolean;
+  compressed: boolean;
   version: number;
 }
 
@@ -80,8 +81,14 @@ export interface EncodeOptions {
   encrypt: boolean;
   paletteSize: number;
   blockSize: number;
-  frameWidth?: number;
-  frameHeight?: number;
+  frameWidth: number;
+  frameHeight: number;
+  compress: boolean;
+  outputFormat: 'video' | 'frames' | 'single-image';
+  fps?: number;
+  threads?: number;
+  showProgress: boolean;
+  keepFrames: boolean;
 }
 
 /** Decoding options from CLI */
@@ -90,6 +97,9 @@ export interface DecodeOptions {
   outputFile: string;
   paletteSize: number;
   blockSize: number;
+  extractArchive?: boolean;
+  threads?: number;
+  showProgress: boolean;
 }
 
 /** Encryption keys */

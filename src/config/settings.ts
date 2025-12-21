@@ -7,6 +7,7 @@ export const DEFAULT_CONFIG = {
   FRAME_WIDTH: 1920,
   FRAME_HEIGHT: 1080,
   VERSION: 1,
+  FPS: 30, // Default 30 frames per second for video
   MAGIC_BYTES: new TextEncoder().encode("CFTFF"),
   END_MARKER: new TextEncoder().encode("END"),
 } as const;
@@ -24,6 +25,7 @@ export function createEncodingConfig(
   paletteSize: number = DEFAULT_CONFIG.PALETTE_SIZE,
   blockSize: number = DEFAULT_CONFIG.BLOCK_SIZE,
   encrypted: boolean = false,
+  compressed: boolean = false,
   frameWidth: number = DEFAULT_CONFIG.FRAME_WIDTH,
   frameHeight: number = DEFAULT_CONFIG.FRAME_HEIGHT
 ): EncodingConfig {
@@ -33,6 +35,7 @@ export function createEncodingConfig(
     frameWidth,
     frameHeight,
     encrypted,
+    compressed,
     version: DEFAULT_CONFIG.VERSION,
   };
 }
