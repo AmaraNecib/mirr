@@ -1,28 +1,27 @@
 {
   "name": "cftff",
-  "version": "1.0.0",
-  "description": "Visual file storage system - encode any file as visual data in images/video",
-  "type": "module",
-  "main": "src/index.ts",
+  "version": "2.0.0",
+  "description": "Convert Files To Frames/Files - Encode any file as video",
+  "main": "src/cli.ts",
   "scripts": {
-    "dev": "bun run src/cli.ts",
-    "build": "bun build src/cli.ts --outdir=dist --target=bun",
-    "start": "bun run dist/cli.js",
-    "encode": "bun run src/cli.ts encode",
-    "decode": "bun run src/cli.ts decode"
+    "encode": "bun --expose-gc src/encode.ts",
+    "decode": "bun --expose-gc src/decode.ts",
+    "cli": "bun --expose-gc run src/cli.ts",
+    "help": "bun run src/cli.ts --help"
   },
   "keywords": [
-    "visual-encoding",
+    "video",
+    "encoding",
     "steganography",
-    "file-storage",
-    "bun",
-    "typescript"
+    "data-storage",
+    "file-to-video"
   ],
-  "dependencies": {
-    "sharp": "^0.33.1"
-  },
+  "author": "",
+  "license": "MIT",
   "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5.3.3"
+    "@types/bun": "latest"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
   }
 }

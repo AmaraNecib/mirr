@@ -18,7 +18,7 @@ Commands:
   decode    Decode visual frames back to a file
 
 Encode Options:
-  --encrypt           Enable RSA encryption
+  --encryption        Enable RSA encryption (overrides ENABLE_ENCRYPTION env)
   --compress          Enable gzip compression
   --output <format>   Output format: video (default), frames, single-image
   --frame <WxH>       Frame dimensions (default: 1920x1080)
@@ -28,6 +28,16 @@ Encode Options:
   --block-size <n>    Size of color blocks in pixels (default: 4)
   --keep-frames       Keep PNG frames after video creation
   --no-progress       Hide progress indicators
+
+Environment Variables:
+  ENABLE_ENCRYPTION   Set to 'true' to enable encryption by default
+  RSA_PUBLIC_KEY      Public key for encryption (PEM format)
+  RSA_PRIVATE_KEY     Private key for decryption (PEM format)
+
+Encryption Priority:
+  1. --encryption flag (if present, encryption is enabled)
+  2. ENABLE_ENCRYPTION env variable (if 'true', encryption is enabled)
+  3. Default: encryption disabled
 
 Decode Options:
   --extract           Extract archive after decoding
@@ -52,7 +62,7 @@ Examples:
   bun run src/cli.ts decode output result.txt --extract
 
   # Encode with encryption
-  bun run src/cli.ts encode secret.txt output --encrypt
+  bun run src/cli.ts encode secret.txt output --encryption
 `);
 }
 
@@ -63,23 +73,23 @@ function parseCLIArgs(): {
   options: any;
 } {
   const args = process.argv.slice(2);
-  
+
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     printUsage();
     process.exit(0);
   }
-  
+
   const command = args[0];
   const commandArgs: string[] = [];
   const options: any = {};
-  
+
   // Parse command arguments and options
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
-    
+
     if (arg.startsWith("--")) {
       // It's an option
-      if (arg === "--encrypt") {
+      if (arg === "--encrypt" || arg === "--encryption") {
         options.encrypt = true;
       } else if (arg === "--compress") {
         options.compress = true;
@@ -98,8 +108,13 @@ function parseCLIArgs(): {
         i++;
       } else if (arg === "--extract") {
         options.extract = true;
+      } else if (arg === "--no-extract") {
+        options.extract = false;
       } else if (arg === "--threads" && args[i + 1]) {
         options.threads = parseInt(args[i + 1]);
+        i++;
+      } else if (arg === "--mime" && args[i + 1]) {
+        options.mimeType = args[i + 1];
         i++;
       } else if (arg === "--palette-size" && args[i + 1]) {
         options.paletteSize = parseInt(args[i + 1]);
@@ -117,23 +132,22 @@ function parseCLIArgs(): {
       commandArgs.push(arg);
     }
   }
-  
+
   return { command, args: commandArgs, options };
 }
 
 /** Main CLI entry point */
 async function main() {
   const { command, args, options } = parseCLIArgs();
-  
+
   if (command === "encode") {
     if (args.length < 2) {
       console.error("Error: encode requires <input> and <output> arguments");
       printUsage();
       process.exit(1);
     }
-    
+
     const outputFormat = options.output || 'video'; // Default to video
-    
     const encodeOptions: EncodeOptions = {
       inputFile: args[0],
       outputPath: args[1],
@@ -148,45 +162,40 @@ async function main() {
       frameHeight: options.frameHeight || DEFAULT_CONFIG.FRAME_HEIGHT,
       showProgress: !options.noProgress,
       keepFrames: options.keepFrames || false,
+      mimeType: options.mimeType,
     };
-    
+
     const result = await encodePipeline(encodeOptions);
-    
     if (result.success) {
       console.log(`\n✓ Encoding complete: ${result.data}`);
     } else {
       console.error(`\n✗ Encoding failed: ${result.error}`);
       process.exit(1);
     }
-  } else if (command === "decode") {
+  }
+  else if (command === "decode") {
     if (args.length < 2) {
       console.error("Error: decode requires <input> and <output> arguments");
       printUsage();
       process.exit(1);
     }
-    
     const decodeOptions: DecodeOptions = {
       inputPath: args[0],
-      outputFile: args[1],
-      extractArchive: options.extract, // undefined if not provided, auto-extracts archives
+      outputPath: args[1],
+      extract: options.extract,
       paletteSize: options.paletteSize || DEFAULT_CONFIG.PALETTE_SIZE,
       blockSize: options.blockSize || DEFAULT_CONFIG.BLOCK_SIZE,
       threads: options.threads,
       showProgress: !options.noProgress,
     };
-    
+
     const result = await decodePipeline(decodeOptions);
-    
     if (result.success) {
       console.log(`\n✓ Decoding complete: ${result.data}`);
     } else {
       console.error(`\n✗ Decoding failed: ${result.error}`);
       process.exit(1);
     }
-  } else {
-    console.error(`Unknown command: ${command}`);
-    printUsage();
-    process.exit(1);
   }
 }
 

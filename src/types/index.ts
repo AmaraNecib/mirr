@@ -5,12 +5,21 @@ export interface Color {
   r: number;
   g: number;
   b: number;
+  a?: number;
 }
 
 /** Color palette configuration */
 export interface ColorPalette {
   colors: Color[];
   size: number;
+}
+
+/** Visual block (NxN pixels with same color) */
+export interface VisualBlock {
+  x: number;
+  y: number;
+  size: number;
+  color: Color;
 }
 
 /** File metadata */
@@ -36,42 +45,12 @@ export interface EncodingConfig {
 
 /** Global header structure */
 export interface GlobalHeader {
-  magic: Uint8Array; // Magic bytes: "CFTFF"
+  magic: Uint8Array;
   version: number;
   config: EncodingConfig;
   metadata: FileMetadata;
-  totalDataLength: number;
-  globalChecksum: string;
-  encryptionEnabled: boolean;
-}
-
-/** Frame structure */
-export interface Frame {
-  index: number;
-  payloadLength: number;
-  payload: Uint8Array;
-  checksum: string;
-}
-
-/** Complete encoded data structure */
-export interface EncodedData {
-  header: GlobalHeader;
-  frames: Frame[];
-  endMarker: Uint8Array;
-}
-
-/** Symbol representation (intermediate encoding) */
-export interface Symbol {
-  value: number;
-  colorIndex: number;
-}
-
-/** Visual block (NxN pixels with same color) */
-export interface VisualBlock {
-  x: number;
-  y: number;
-  size: number;
-  color: Color;
+  dataLength: number;
+  headerSize: number;
 }
 
 /** Encoding options from CLI */
@@ -89,15 +68,16 @@ export interface EncodeOptions {
   threads?: number;
   showProgress: boolean;
   keepFrames: boolean;
+  mimeType?: string;
 }
 
 /** Decoding options from CLI */
 export interface DecodeOptions {
   inputPath: string;
-  outputFile: string;
+  outputPath: string; // Stay with outputPath as it's more descriptive for potentially multiple files
+  extract?: boolean;   // Stay with extract as it's shorter
   paletteSize: number;
   blockSize: number;
-  extractArchive?: boolean;
   threads?: number;
   showProgress: boolean;
 }

@@ -1,107 +1,119 @@
-import type { GlobalHeader, Frame, EncodedData, EncodingConfig, FileMetadata } from "../types/index.ts";
+import type { GlobalHeader, EncodingConfig, FileMetadata } from "../types/index.ts";
 import { DEFAULT_CONFIG } from "../config/settings.ts";
-import { serializeMetadata } from "./metadata.ts";
-import { calculateChecksum } from "../utils/checksum.ts";
 
 /** Build global header */
 export async function buildGlobalHeader(
   config: EncodingConfig,
   metadata: FileMetadata,
-  totalDataLength: number,
+  dataLength: number,
   globalChecksum: string,
   encryptionEnabled: boolean
 ): Promise<GlobalHeader> {
   return {
-    magic: DEFAULT_CONFIG.MAGIC_BYTES,
+    magic: new TextEncoder().encode(DEFAULT_CONFIG.MAGIC),
     version: config.version,
     config,
     metadata,
-    totalDataLength,
-    globalChecksum,
-    encryptionEnabled,
+    dataLength,
+    headerSize: 0, // Will be calculated on serialization
   };
 }
 
 /** Serialize global header to bytes */
 export async function serializeHeader(header: GlobalHeader): Promise<Uint8Array> {
   const encoder = new TextEncoder();
-  
-  // Magic bytes are already encoded
-  const magicBytes = header.magic;
-  
-  // Serialize config
-  const configData = new Uint8Array(25);
-  const configView = new DataView(configData.buffer);
-  configView.setUint32(0, header.config.paletteSize, false);
-  configView.setUint32(4, header.config.blockSize, false);
-  configView.setUint32(8, header.config.frameWidth, false);
-  configView.setUint32(12, header.config.frameHeight, false);
-  configView.setUint8(16, header.config.encrypted ? 1 : 0);
-  configView.setUint32(17, header.config.version, false);
-  configView.setUint8(21, header.encryptionEnabled ? 1 : 0);
-  configView.setUint8(22, header.config.compressed ? 1 : 0);
-  
-  // Serialize metadata
-  const metadataBytes = serializeMetadata(header.metadata);
-  
-  // Serialize checksum
-  const checksumBytes = encoder.encode(header.globalChecksum);
-  
-  // Calculate total size
-  const totalSize =
-    magicBytes.length +
-    4 + // version
-    configData.length +
-    4 + // metadata length
-    metadataBytes.length +
-    8 + // total data length
-    4 + // checksum length
-    checksumBytes.length;
-  
+
+  const nameBytes = encoder.encode(header.metadata.name);
+  const mimeBytes = encoder.encode(header.metadata.mimeType);
+  const checksumBytes = encoder.encode(header.metadata.checksum);
+
+  // Total size calculation
+  // Magic (5) + Version (4) + Config (25) + Metadata (Len info + data) + DataLength (8)
+  const metadataSize = 4 + nameBytes.length + 8 + 4 + mimeBytes.length + 4 + checksumBytes.length + 16;
+  const totalSize = 5 + 4 + 25 + 4 + metadataSize + 8;
+
   const buffer = new Uint8Array(totalSize);
+  const view = new DataView(buffer.buffer);
   let offset = 0;
-  
-  // Write magic bytes
-  buffer.set(magicBytes, offset);
-  offset += magicBytes.length;
-  
-  // Write version
-  new DataView(buffer.buffer).setUint32(offset, header.version, false);
-  offset += 4;
-  
-  // Write config
-  buffer.set(configData, offset);
-  offset += configData.length;
-  
-  // Write metadata
-  new DataView(buffer.buffer).setUint32(offset, metadataBytes.length, false);
-  offset += 4;
-  buffer.set(metadataBytes, offset);
-  offset += metadataBytes.length;
-  
-  // Write total data length
-  new DataView(buffer.buffer).setBigUint64(offset, BigInt(header.totalDataLength), false);
-  offset += 8;
-  
-  // Write checksum
-  new DataView(buffer.buffer).setUint32(offset, checksumBytes.length, false);
-  offset += 4;
-  buffer.set(checksumBytes, offset);
-  
+
+  // Magic
+  buffer.set(header.magic, offset); offset += 5;
+
+  // Version
+  view.setUint32(offset, header.version, false); offset += 4;
+
+  // Config
+  view.setUint32(offset, header.config.paletteSize, false); offset += 4;
+  view.setUint32(offset, header.config.blockSize, false); offset += 4;
+  view.setUint32(offset, header.config.frameWidth, false); offset += 4;
+  view.setUint32(offset, header.config.frameHeight, false); offset += 4;
+  view.setUint8(offset, header.config.encrypted ? 1 : 0); offset += 1;
+  view.setUint32(offset, header.config.version, false); offset += 4;
+  view.setUint8(offset, header.config.compressed ? 1 : 0); offset += 1;
+  view.setUint8(offset, 0); offset += 3; // Alignment padding
+
+  // Metadata
+  view.setUint32(offset, metadataSize, false); offset += 4;
+  view.setUint32(offset, nameBytes.length, false); offset += 4;
+  buffer.set(nameBytes, offset); offset += nameBytes.length;
+  view.setBigUint64(offset, BigInt(header.metadata.size), false); offset += 8;
+  view.setUint32(offset, mimeBytes.length, false); offset += 4;
+  buffer.set(mimeBytes, offset); offset += mimeBytes.length;
+  view.setUint32(offset, checksumBytes.length, false); offset += 4;
+  buffer.set(checksumBytes, offset); offset += checksumBytes.length;
+  view.setBigUint64(offset, BigInt(header.metadata.createdAt.getTime()), false); offset += 8;
+  view.setBigUint64(offset, BigInt(header.metadata.modifiedAt.getTime()), false); offset += 8;
+
+  // Data Length
+  view.setBigUint64(offset, BigInt(header.dataLength), false);
+
   return buffer;
 }
 
-/** Build a frame */
-export async function buildFrame(
-  index: number,
-  payload: Uint8Array
-): Promise<Frame> {
-  const checksum = await calculateChecksum(payload);
-  
+/** Parse global header from bytes */
+export async function parseHeader(data: Uint8Array): Promise<GlobalHeader> {
+  const decoder = new TextDecoder();
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 0;
+
+  const magic = decoder.decode(data.slice(0, 5));
+  if (magic !== DEFAULT_CONFIG.MAGIC) throw new Error("Invalid magic bytes");
+  offset += 5;
+
+  const version = view.getUint32(offset, false); offset += 4;
+
+  const config: EncodingConfig = {
+    paletteSize: view.getUint32(offset, false),
+    blockSize: (offset += 4, view.getUint32(offset, false)),
+    frameWidth: (offset += 4, view.getUint32(offset, false)),
+    frameHeight: (offset += 4, view.getUint32(offset, false)),
+    encrypted: (offset += 4, view.getUint8(offset) === 1),
+    version: (offset += 1, view.getUint32(offset, false)),
+    compressed: (offset += 4, view.getUint8(offset) === 1)
+  };
+  offset += 4; // Skip padding
+
+  const metadataSize = view.getUint32(offset, false); offset += 4;
+  const metadataStart = offset;
+
+  const nameLen = view.getUint32(offset, false); offset += 4;
+  const name = decoder.decode(data.slice(offset, offset + nameLen)); offset += nameLen;
+  const size = Number(view.getBigUint64(offset, false)); offset += 8;
+  const mimeLen = view.getUint32(offset, false); offset += 4;
+  const mimeType = decoder.decode(data.slice(offset, offset + mimeLen)); offset += mimeLen;
+  const checksumLen = view.getUint32(offset, false); offset += 4;
+  const checksum = decoder.decode(data.slice(offset, offset + checksumLen)); offset += checksumLen;
+  const createdAt = new Date(Number(view.getBigUint64(offset, false))); offset += 8;
+  const modifiedAt = new Date(Number(view.getBigUint64(offset, false))); offset += 8;
+
+  const dataLength = Number(view.getBigUint64(metadataStart + metadataSize, false));
+
   return {
-    index,
-    payloadLength: payload.length,
-    payload,
-    checksum,
+    magic: data.slice(0, 5),
+    version,
+    config,
+    metadata: { name, size, mimeType, checksum, createdAt, modifiedAt },
+    dataLength,
+    headerSize: metadataStart + metadataSize + 8
   };
 }

@@ -1,8 +1,35 @@
-node_modules/
-dist/
-.env
-*.log
-*.tmp
+# Ignore build outputs
 output/
-test-files/
-encode/
+*.mkv
+*.mp4
+*.avi
+
+# Ignore input , data , resault
+
+input
+resault
+data
+
+# Ignore temporary files
+.cftff-*
+temp-*
+
+# Node modules
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,87 +1,114 @@
-# CFTFF - Visual File Storage System
+# CFTFF - Convert Files To Frames/Files
 
-A CLI tool to encode any file as visual data (images/video frames) using a configurable color palette, with optional RSA encryption.
+Encode any file as a lossless video using True Color (24-bit) encoding. Handles files of any size with automatic multi-part processing.
+
+## Quick Start
+
+```bash
+# Encode
+bun run encode input.txt output
+
+# Decode  
+bun run decode output result.txt
+```
 
 ## Features
 
-- **Universal file support**: Encode any file type (binary-safe)
-- **Loss-tolerant encoding**: Uses color quantization and block-based encoding
-- **Configurable palette**: Default 16-color palette (extensible)
-- **Optional RSA encryption**: Secure your data before visual encoding
-- **Bit-perfect restoration**: Decode files exactly as they were
-- **Frame-based protocol**: Paginated encoding with checksums
+- ✅ **True Color (24-bit)** - Lossless data recovery
+- ✅ **Any File Size** - Automatic multi-part for large files
+- ✅ **Encryption** - Optional RSA-2048 encryption
+- ✅ **Compression** - Optional gzip compression
+- ✅ **Progress Tracking** - Real-time progress with ETA
+- ✅ **Auto Cleanup** - Temporary files removed automatically
 
 ## Installation
 
 ```bash
-bun install
+# Clone repository
+git clone <repo-url>
+cd cftff
+
+# Install Bun (if not installed)
+curl -fsSL https://bun.sh/install | bash
+
+# Verify FFmpeg is installed
+ffmpeg -version
 ```
 
 ## Usage
 
-### Encode a file
+### Basic
 
 ```bash
-bun run encode <inputFile> <outputDir> [options]
+# Encode a file
+bun run encode input.txt output
 
-# Example
-bun run encode document.pdf ./output --palette-size 16 --block-size 4
+# Decode
+bun run decode output result.txt
+
+# Encode a directory
+bun run encode my-folder output
 ```
 
-### Decode a file
+### With Options
 
 ```bash
-bun run decode <inputDir> <outputFile> [options]
+# Encryption
+bun run encode secret.txt output --encryption
 
-# Example
-bun run decode ./output document.pdf
+# Compression
+bun run encode data.bin output --compress
+
+# Custom settings
+bun run encode input.txt output --fps 60 --frame 3840x2160
+
+# Combined
+bun run encode input.txt output --encryption --compress
 ```
 
-### Options
+## Examples
 
-- `--encrypt`: Enable RSA encryption (requires keys in .env)
-- `--palette-size <number>`: Colors in palette (default: 16)
-- `--block-size <number>`: Pixels per symbol (default: 4)
+See the `examples/` directory:
+- `basic.ts` - Basic usage examples
+- `encryption.ts` - Encryption setup and usage
 
-## Configuration
+## How It Works
 
-Copy `.env.example` to `.env` and add RSA keys for encryption support.
+**Small Files (<1.5GB):**
+- Encodes directly to video
+- Fast and efficient
 
-## Architecture
+**Large Files (>1.5GB):**
+- Automatically splits into 1.5GB chunks
+- Encodes each chunk separately
+- Reassembles on decode
+- Cleans up temporary files
 
-```
-src/
-├── cli.ts                 # CLI entry point
-├── config/
-│   └── settings.ts        # Configuration management
-├── types/
-│   └── index.ts          # Core interfaces and types
-├── core/
-│   ├── fileReader.ts     # File I/O operations
-│   ├── metadata.ts       # Metadata extraction
-│   ├── encryption.ts     # RSA encryption layer
-│   ├── encoder.ts        # Bytes to symbols encoding
-│   ├── visualMapper.ts   # Symbol to color mapping
-│   ├── frameBuilder.ts   # Frame construction
-│   ├── decoder.ts        # Visual to bytes decoding
-│   └── protocol.ts       # Binary protocol handling
-├── pipeline/
-│   ├── encodePipeline.ts # Encoding workflow
-│   └── decodePipeline.ts # Decoding workflow
-└── utils/
-    ├── checksum.ts       # Checksum utilities
-    ├── palette.ts        # Color palette definitions
-    └── imageWriter.ts    # Image output utilities
-```
+## Technical Details
 
-## Protocol Structure
+- **Encoding**: 24-bit RGB (3 bytes/pixel)
+- **Video Format**: H.265/HEVC lossless
+- **Chunk Size**: 1.5GB (for large files)
+- **Memory Usage**: ~4GB peak per chunk
+- **Encryption**: RSA-2048
+- **Compression**: gzip
 
-Each encoded file follows this structure:
+## Requirements
 
-1. **Global Header**: Magic bytes, version, settings, metadata, checksums
-2. **Frame Data**: Paginated payload with per-frame checksums
-3. **End Marker**: Termination signal
+- [Bun](https://bun.sh) runtime
+- [FFmpeg](https://ffmpeg.org) with libx265
+
+## Contributing
+
+Contributions welcome! Please ensure:
+- Code follows existing style
+- Add tests for new features
+- Update documentation
 
 ## License
 
 MIT
+
+## Acknowledgments
+
+Built with Bun and FFmpeg

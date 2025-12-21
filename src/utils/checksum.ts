@@ -4,18 +4,18 @@
 export function crc32(data: Uint8Array): number {
   let crc = 0xffffffff;
   const table = makeCRC32Table();
-  
+
   for (let i = 0; i < data.length; i++) {
     crc = (crc >>> 8) ^ table[(crc ^ data[i]) & 0xff];
   }
-  
+
   return (crc ^ 0xffffffff) >>> 0;
 }
 
 /** Generate CRC32 lookup table */
 function makeCRC32Table(): Uint32Array {
   const table = new Uint32Array(256);
-  
+
   for (let i = 0; i < 256; i++) {
     let c = i;
     for (let j = 0; j < 8; j++) {
@@ -23,7 +23,7 @@ function makeCRC32Table(): Uint32Array {
     }
     table[i] = c;
   }
-  
+
   return table;
 }
 
@@ -44,6 +44,28 @@ export async function verifyChecksum(
   data: Uint8Array,
   expectedChecksum: string
 ): Promise<boolean> {
+  if (expectedChecksum === "NONE" || expectedChecksum === "N/A") {
+    return true;
+  }
   const actualChecksum = await calculateChecksum(data);
   return actualChecksum === expectedChecksum;
+}
+
+/** Stateful checksum verification for streams */
+export class StreamingChecksum {
+  private hash: any;
+
+  constructor() {
+    // Dynamically require crypto to avoid bundling issues if not needed
+    const { createHash } = require("crypto");
+    this.hash = createHash("sha256");
+  }
+
+  update(chunk: Uint8Array): void {
+    this.hash.update(chunk);
+  }
+
+  digest(): string {
+    return this.hash.digest("hex");
+  }
 }

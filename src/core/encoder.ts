@@ -1,79 +1,82 @@
-import type { Symbol } from "../types/index.ts";
+import type { Color } from "../types/index.ts";
 
-/** Encode bytes to symbols using palette size */
-export function encodeToSymbols(data: Uint8Array, paletteSize: number): Symbol[] {
-  const symbols: Symbol[] = [];
-  const bitsPerSymbol = Math.ceil(Math.log2(paletteSize));
-  
-  // Convert bytes to bit string for easier manipulation
-  let bitBuffer = "";
-  for (const byte of data) {
-    bitBuffer += byte.toString(2).padStart(8, "0");
-  }
-  
-  // Extract symbols from bit buffer
-  for (let i = 0; i < bitBuffer.length; i += bitsPerSymbol) {
-    const symbolBits = bitBuffer.slice(i, i + bitsPerSymbol);
-    if (symbolBits.length === 0) break;
-    
-    // Pad with zeros if necessary
-    const paddedBits = symbolBits.padEnd(bitsPerSymbol, "0");
-    const value = parseInt(paddedBits, 2);
-    
-    // Ensure value is within palette range
-    const colorIndex = Math.min(value, paletteSize - 1);
-    
-    symbols.push({ value, colorIndex });
-  }
-  
-  return symbols;
-}
-
-/** Decode symbols back to bytes */
-export function decodeFromSymbols(
-  symbols: Symbol[],
-  paletteSize: number,
-  originalByteLength: number
+/** 
+ * Encode bytes directly to RGB pixels (24-bit color)
+ * Returns Uint8Array of RGBA values (width * height * 4)
+ */
+export function encodeToPixels(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  paddingColor: Color = { r: 0, g: 0, b: 0 }
 ): Uint8Array {
-  const bitsPerSymbol = Math.ceil(Math.log2(paletteSize));
-  
-  // Reconstruct bit string from symbols
-  let bitBuffer = "";
-  for (const symbol of symbols) {
-    bitBuffer += symbol.value.toString(2).padStart(bitsPerSymbol, "0");
-  }
-  
-  // Convert bit string back to bytes
-  const bytes: number[] = [];
-  for (let i = 0; i < bitBuffer.length && bytes.length < originalByteLength; i += 8) {
-    const byteBits = bitBuffer.slice(i, i + 8);
-    if (byteBits.length === 8) {
-      bytes.push(parseInt(byteBits, 2));
+  const pixels = new Uint8Array(width * height * 4);
+  let dataIndex = 0;
+
+  for (let i = 0; i < width * height; i++) {
+    const pixelIndex = i * 4;
+
+    if (dataIndex < data.length) {
+      // We have data for at least R
+      pixels[pixelIndex] = data[dataIndex++]; // R
+
+      // G
+      if (dataIndex < data.length) {
+        pixels[pixelIndex + 1] = data[dataIndex++];
+      } else {
+        pixels[pixelIndex + 1] = paddingColor.g;
+      }
+
+      // B
+      if (dataIndex < data.length) {
+        pixels[pixelIndex + 2] = data[dataIndex++];
+      } else {
+        pixels[pixelIndex + 2] = paddingColor.b;
+      }
+
+      pixels[pixelIndex + 3] = 255; // Alpha always 255
+    } else {
+      // Padding pixel (black)
+      pixels[pixelIndex] = paddingColor.r;
+      pixels[pixelIndex + 1] = paddingColor.g;
+      pixels[pixelIndex + 2] = paddingColor.b;
+      pixels[pixelIndex + 3] = 255;
     }
   }
-  
-  return new Uint8Array(bytes);
+
+  return pixels;
 }
 
-/** Calculate symbols per frame based on dimensions and block size */
-export function calculateSymbolsPerFrame(
-  frameWidth: number,
-  frameHeight: number,
-  blockSize: number
-): number {
-  const blocksX = Math.floor(frameWidth / blockSize);
-  const blocksY = Math.floor(frameHeight / blockSize);
-  return blocksX * blocksY;
+/** 
+ * Decode RGB pixels (from RGBA buffer) back to bytes
+ */
+export function decodeFromPixels(
+  pixels: Uint8Array,
+  originalDataLength: number
+): Uint8Array {
+  const data = new Uint8Array(originalDataLength);
+  let dataIndex = 0;
+
+  // Process each pixel
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (dataIndex >= originalDataLength) break;
+    data[dataIndex++] = pixels[i];     // R
+
+    if (dataIndex >= originalDataLength) break;
+    data[dataIndex++] = pixels[i + 1]; // G
+
+    if (dataIndex >= originalDataLength) break;
+    data[dataIndex++] = pixels[i + 2]; // B
+  }
+
+  return data;
 }
 
-/** Calculate required number of frames */
-export function calculateRequiredFrames(
+/** Calculate required frames for 24-bit mode (3 bytes per pixel) */
+export function calculateRequiredFrames24Bit(
   dataLength: number,
-  paletteSize: number,
-  symbolsPerFrame: number
+  pixelsPerFrame: number
 ): number {
-  const bitsPerSymbol = Math.ceil(Math.log2(paletteSize));
-  const totalBits = dataLength * 8;
-  const totalSymbols = Math.ceil(totalBits / bitsPerSymbol);
-  return Math.ceil(totalSymbols / symbolsPerFrame);
+  const bytesPerFrame = pixelsPerFrame * 3;
+  return Math.ceil(dataLength / bytesPerFrame);
 }
