@@ -23,6 +23,7 @@ Encode Options:
   --output <format>   Output format: video (default), frames, single-image
   --frame <WxH>       Frame dimensions (default: 1920x1080)
   --fps <n>           Frames per second for video (default: 30)
+  --codec <name>      Video codec: libx264rgb, ffv1, libx265 (default: libx264rgb)
   --threads <n>       Number of threads for parallel processing
   --palette-size <n>  Number of colors in palette (default: 16)
   --block-size <n>    Size of color blocks in pixels (default: 4)
@@ -106,6 +107,9 @@ function parseCLIArgs(): {
       } else if (arg === "--fps" && args[i + 1]) {
         options.fps = parseInt(args[i + 1]);
         i++;
+      } else if (arg === "--codec" && args[i + 1]) {
+        options.codec = args[i + 1];
+        i++;
       } else if (arg === "--extract") {
         options.extract = true;
       } else if (arg === "--no-extract") {
@@ -163,6 +167,7 @@ async function main() {
       showProgress: !options.noProgress,
       keepFrames: options.keepFrames || false,
       mimeType: options.mimeType,
+      codec: options.codec || 'libx264rgb',
     };
 
     const result = await encodePipeline(encodeOptions);

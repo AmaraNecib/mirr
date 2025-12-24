@@ -4,6 +4,9 @@ import { streamRawFramesFromVideo } from "../utils/imageWriter.ts";
 import { parseHeader } from "../core/protocol.ts";
 import { extractArchiveFromStream } from "../utils/archive.ts";
 import { ProgressBar } from "../utils/progressBar.ts";
+import { decompress } from "../utils/compression.ts";
+import { Readable } from "stream";
+import { createBrotliDecompress } from "zlib";
 
 /**
  * Main decoding pipeline
@@ -36,7 +39,7 @@ export async function decodePipeline(
       const { value: frame, done } = await iterator.next();
       if (done) throw new Error("Video ended before header could be parsed");
 
-      const decoded = decodeFromPixels(frame, (frame.length / 4) * 3);
+      const decoded = decodeFromPixels(frame, frame.length);
       const newHeaderData = new Uint8Array(headerData.length + decoded.length);
       newHeaderData.set(headerData);
       newHeaderData.set(decoded, headerData.length);
@@ -80,7 +83,7 @@ export async function decodePipeline(
         const { value: frame, done } = await iterator.next();
         if (done) break;
 
-        const decoded = decodeFromPixels(frame, (frame.length / 4) * 3);
+        const decoded = decodeFromPixels(frame, frame.length);
         const remaining = header!.dataLength - bytesRead;
         const toYield = decoded.slice(0, Math.min(decoded.length, remaining));
 
@@ -94,15 +97,31 @@ export async function decodePipeline(
       }
     })();
 
+    // Phase 3.5: Decompression if needed
+    let finalPayloadStream: AsyncIterable<Uint8Array> = payloadStream;
+    if (header.config.compressed) {
+      console.log("Decompressing payload stream (Brotli)...");
+      // Use Node's zlib via Readable.from
+      const decompressor = createBrotliDecompress();
+      const readable = Readable.from(payloadStream);
+      readable.pipe(decompressor);
+
+      finalPayloadStream = (async function* () {
+        for await (const chunk of decompressor) {
+          yield new Uint8Array(chunk);
+        }
+      })();
+    }
+
     // Phase 4: Output Generation
     if (shouldExtract) {
       const { mkdirSync } = await import("fs");
       try { mkdirSync(options.outputPath, { recursive: true }); } catch { }
-      await extractArchiveFromStream(payloadStream, options.outputPath, options.showProgress);
+      await extractArchiveFromStream(finalPayloadStream, options.outputPath, options.showProgress);
     } else {
       const fs = await import("fs");
       const writer = fs.createWriteStream(options.outputPath);
-      for await (const chunk of payloadStream) {
+      for await (const chunk of finalPayloadStream) {
         await new Promise<void>((resolve, reject) => {
           if (!writer.write(chunk)) {
             writer.once('drain', resolve);

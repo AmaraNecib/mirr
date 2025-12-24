@@ -38,7 +38,7 @@ export async function* streamRawFrames(
 /** Stream raw RGBA frames directly from video stream (Generator) */
 export async function* streamRawFramesFromVideo(videoPath: string): AsyncGenerator<Uint8Array> {
   const { width, height } = await probeVideoDimensions(videoPath);
-  const frameSize = width * height * 4; // RGBA
+  const frameSize = width * height * 3; // RGB24
 
   const ffmpeg = Bun.spawn([
     'ffmpeg',
@@ -46,7 +46,7 @@ export async function* streamRawFramesFromVideo(videoPath: string): AsyncGenerat
     '-loglevel', 'error',
     '-i', videoPath,
     '-f', 'rawvideo',
-    '-pix_fmt', 'rgba',
+    '-pix_fmt', 'rgb24',
     '-an', '-sn', '-dn',
     '-vsync', '0',
     '-map', '0:v:0',

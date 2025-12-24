@@ -10,11 +10,11 @@ export function encodeToPixels(
   height: number,
   paddingColor: Color = { r: 0, g: 0, b: 0 }
 ): Uint8Array {
-  const pixels = new Uint8Array(width * height * 4);
+  const pixels = new Uint8Array(width * height * 3);
   let dataIndex = 0;
 
   for (let i = 0; i < width * height; i++) {
-    const pixelIndex = i * 4;
+    const pixelIndex = i * 3;
 
     if (dataIndex < data.length) {
       // We have data for at least R
@@ -33,14 +33,11 @@ export function encodeToPixels(
       } else {
         pixels[pixelIndex + 2] = paddingColor.b;
       }
-
-      pixels[pixelIndex + 3] = 255; // Alpha always 255
     } else {
       // Padding pixel (black)
       pixels[pixelIndex] = paddingColor.r;
       pixels[pixelIndex + 1] = paddingColor.g;
       pixels[pixelIndex + 2] = paddingColor.b;
-      pixels[pixelIndex + 3] = 255;
     }
   }
 
@@ -58,7 +55,7 @@ export function decodeFromPixels(
   let dataIndex = 0;
 
   // Process each pixel
-  for (let i = 0; i < pixels.length; i += 4) {
+  for (let i = 0; i < pixels.length; i += 3) {
     if (dataIndex >= originalDataLength) break;
     data[dataIndex++] = pixels[i];     // R
 

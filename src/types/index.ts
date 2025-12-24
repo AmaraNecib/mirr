@@ -69,6 +69,7 @@ export interface EncodeOptions {
   showProgress: boolean;
   keepFrames: boolean;
   mimeType?: string;
+  codec?: 'libx265' | 'ffv1';
 }
 
 /** Decoding options from CLI */

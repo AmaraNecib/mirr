@@ -8,6 +8,9 @@ import {
 } from "../core/encoder.ts";
 import { buildGlobalHeader, serializeHeader } from "../core/protocol.ts";
 import { VideoOutputStream } from "../core/ffmpegStream.ts";
+import { createBrotliCompress, constants } from "zlib";
+import { pipeline } from "stream/promises";
+import { createReadStream, createWriteStream, statSync } from "fs";
 
 /**
  * Main encoding pipeline (24-bit True Color only)
@@ -80,7 +83,8 @@ export async function encodePipeline(
       width: frameWidth,
       height: frameHeight,
       fps: options.fps || 30,
-      outputPath: videoPath
+      outputPath: videoPath,
+      codec: options.codec
     });
 
     let offset = 0;
@@ -130,12 +134,45 @@ async function encodeFromFile(
     }
   }
 
+  // Handle compression for large files
+  let isCompressed = false;
+  if (options.compress) {
+    console.log(`Compressing input data (Brotli)...`);
+    const compressedPath = `${inputToEncode}.br`;
+
+    await pipeline(
+      createReadStream(inputToEncode),
+      createBrotliCompress({
+        params: {
+          [constants.BROTLI_PARAM_QUALITY]: 4,
+          [constants.BROTLI_PARAM_LGWIN]: 24
+        }
+      }),
+      createWriteStream(compressedPath)
+    );
+
+    // SAVE DISK SPACE: If we compressed a chunk or temp file, delete the original .bin immediately
+    if (inputToEncode.includes('.part') || inputToEncode.includes('.cftff-temp')) {
+      try { fs.unlinkSync(inputToEncode); } catch { }
+    }
+
+    // Clean up uncompressed temp archive if it exists
+    if (tempArchive && inputToEncode === tempArchive) {
+      try { fs.unlinkSync(tempArchive); } catch { }
+    }
+
+    inputToEncode = compressedPath;
+    tempArchive = compressedPath; // Ensure it gets cleaned up later
+    isCompressed = true;
+    console.log(`✓ Compressed data: ${isCompressed}`);
+  }
+
   const file = Bun.file(inputToEncode);
   const fileSize = file.size;
   const frameWidth = options.frameWidth || DEFAULT_CONFIG.FRAME_WIDTH;
   const frameHeight = options.frameHeight || DEFAULT_CONFIG.FRAME_HEIGHT;
 
-  const config = createEncodingConfig(0, 1, false, false, frameWidth, frameHeight);
+  const config = createEncodingConfig(0, 1, false, isCompressed, frameWidth, frameHeight);
   const metadata = {
     name: "streamed_data",
     size: fileSize,
@@ -154,7 +191,8 @@ async function encodeFromFile(
     width: frameWidth,
     height: frameHeight,
     fps: options.fps || 30,
-    outputPath: videoPath
+    outputPath: videoPath,
+    codec: options.codec
   });
 
   const bytesPerFrame = frameWidth * frameHeight * 3;
@@ -199,7 +237,22 @@ async function encodeFromFile(
   }
 
   await videoStream.close();
-  if (tempArchive) { try { fs.unlinkSync(tempArchive); } catch { } }
+  if (tempArchive) {
+    try {
+      const { dirname, resolve, sep, basename } = await import("path");
+      const fullPath = resolve(tempArchive);
+
+      // If the file is directly inside a .cftff-temp- directory, delete the whole directory
+      const parentDir = dirname(fullPath);
+      if (basename(parentDir).startsWith(".cftff-temp-")) {
+        fs.rmSync(parentDir, { recursive: true, force: true });
+      } else {
+        fs.unlinkSync(fullPath);
+      }
+    } catch (e) {
+      console.warn(`[Cleanup Warning] Could not delete ${tempArchive}: ${e}`);
+    }
+  }
 
   return { success: true, data: [videoPath] };
 }

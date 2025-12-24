@@ -7,6 +7,7 @@ export interface VideoStreamOptions {
     height: number;
     fps: number;
     outputPath: string;
+    codec?: 'libx265' | 'ffv1' | 'libx264rgb';
 }
 
 export class VideoOutputStream {
@@ -15,23 +16,50 @@ export class VideoOutputStream {
     private closed = false;
 
     constructor(options: VideoStreamOptions) {
-        console.log(`Starting video stream: ${options.width}x${options.height} @ ${options.fps}fps`);
-        console.log(`Methods: rawvideo (rgba) -> libx265 (lossless) -> gbrp`);
+        const codec = options.codec || 'libx265';
+        console.log(`Starting video stream: ${options.width}x${options.height} @ ${options.fps}fps using ${codec}`);
 
-        this.ffmpeg = spawn([
+        const ffmpegArgs = [
             'ffmpeg',
             '-y', // Overwrite output
             '-f', 'rawvideo',
             '-vcodec', 'rawvideo',
             '-s', `${options.width}x${options.height}`,
-            '-pix_fmt', 'rgba', // Input format from our buffer
+            '-pix_fmt', 'rgb24', // Input format from our buffer
             '-r', options.fps.toString(),
             '-i', '-', // Read from stdin
-            '-c:v', 'libx265',
-            '-x265-params', 'lossless=1', // STRICT lossless
-            '-pix_fmt', 'gbrp', // Planar RGB to avoid YUV conversion errors
-            options.outputPath
-        ], {
+        ];
+
+        if (codec === 'ffv1') {
+            ffmpegArgs.push(
+                '-c:v', 'ffv1',
+                '-level', '3',
+                '-coder', '1',
+                '-context', '0',
+                '-g', '1',
+                '-slices', '4',
+                '-slicecrc', '1',
+                '-vf', 'format=gbrp',
+                '-pix_fmt', 'gbrp'
+            );
+        } else if (codec === 'libx264rgb') {
+            ffmpegArgs.push(
+                '-c:v', 'libx264rgb',
+                '-crf', '0',
+                '-preset', 'veryslow',
+                '-pix_fmt', 'rgb24'
+            );
+        } else {
+            ffmpegArgs.push(
+                '-c:v', 'libx265',
+                '-x265-params', 'lossless=1',
+                '-pix_fmt', 'gbrp'
+            );
+        }
+
+        ffmpegArgs.push(options.outputPath);
+
+        this.ffmpeg = spawn(ffmpegArgs, {
             stdin: 'pipe',
             stdout: 'inherit',
             stderr: 'inherit',

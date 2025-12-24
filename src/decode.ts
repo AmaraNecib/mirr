@@ -6,6 +6,7 @@
 
 import { existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
+import { cpus } from "os";
 
 const args = process.argv.slice(2);
 const inputPath = args[0];
@@ -34,21 +35,54 @@ if (existsSync(metadataPath)) {
     try {
         // Decode each
         console.log("Step 1/3: Decoding parts...");
+
+        const threadsFlagIndex = flags.indexOf("--threads");
+        // Default to a safer concurrency for massive files
+        const maxConcurrency = threadsFlagIndex !== -1 ? parseInt(flags[threadsFlagIndex + 1]) : Math.min(cpus().length, 3);
+
+        console.log(`Using max ${maxConcurrency} parallel decoding tasks\n`);
+
+        const activeTasks = new Set<Promise<void>>();
+        const failedIndices: number[] = [];
+
         for (let i = 0; i < metadata.totalParts; i++) {
+            if (activeTasks.size >= maxConcurrency) {
+                await Promise.race(activeTasks);
+            }
+
             const partDir = join(inputPath, `part${i.toString().padStart(3, '0')}`);
-
-            console.log(`\n[${i + 1}/${metadata.totalParts}] Decoding part ${i}...`);
-
             const chunkOut = join(chunksDir, `chunk.part${i.toString().padStart(3, '0')}`);
 
-            // PASS --no-extract to parts, we will extract the combined file at the end
-            const proc = Bun.spawn(
-                ["bun", "--expose-gc", "run", "src/cli.ts", "decode", partDir, chunkOut, "--no-extract", ...flags],
-                { stdout: "inherit", stderr: "inherit" }
-            );
+            console.log(`[Queueing] Part ${i}...`);
 
-            const exitCode = await proc.exited;
-            if (exitCode !== 0) throw new Error(`Decoding failed for part ${i}`);
+            const task = (async () => {
+                const proc = Bun.spawn(
+                    ["bun", "--expose-gc", "run", "src/cli.ts", "decode", partDir, chunkOut, "--no-extract", ...flags],
+                    { stdout: "pipe", stderr: "pipe" }
+                );
+
+                const [stdout, stderr] = await Promise.all([
+                    new Response(proc.stdout).text(),
+                    new Response(proc.stderr).text()
+                ]);
+
+                const exitCode = await proc.exited;
+                if (exitCode !== 0) {
+                    console.error(`\n❌ Error decoding part ${i}:\n${stderr}`);
+                    failedIndices.push(i);
+                } else {
+                    console.log(`✓ Part ${i} complete`);
+                }
+            })();
+
+            activeTasks.add(task);
+            task.finally(() => activeTasks.delete(task));
+        }
+
+        await Promise.all(activeTasks);
+
+        if (failedIndices.length > 0) {
+            throw new Error(`Decoding failed for parts: ${failedIndices.join(", ")}`);
         }
 
         // Join
