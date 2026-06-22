@@ -5,13 +5,38 @@ output/
 *.avi
 
 # Ignore input , data , resault
-
 input
 resault
 data
 
+# User test data and outputs (NEVER commit)
+big_input/
+big input/
+dbg_out/
+smart_out/
+mir_out/
+mir_outs/
+mirror_out/
+out/
+tmp/
+tmp-*
+
+
+
+# Ad-hoc test artifacts (kept around locally, never committed)
+big_keep.bin
+keep.bin
+keep2/
+keep_nocomp.bin
+restored-archive.bin
+restored.bin
+smart_keep.bin
+t_keep.bin
+t_restored-archive.bin
+*.tmp
+
 # Ignore temporary files
-.cftff-*
+.mirr-*
 temp-*
 
 # Node modules
@@ -20,6 +45,10 @@ node_modules/
 # Environment
 .env
 .env.local
+.env.test
+
+# PEM keys (never commit private keys)
+*.pem
 
 # IDE
 .vscode/

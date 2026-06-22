@@ -1,258 +1,235 @@
+/**
+ * Encoding pipeline — single-part only.
+ *
+ * Reads a file (or archived directory), optionally compresses with Brotli,
+ * optionally encrypts with the provided EncryptionService, then writes the
+ * resulting payload to a lossless video via FFmpeg.
+ *
+ * Multi-part handling lives in engine/multiPart.ts. This module only knows
+ * about one input → one output video.
+ */
+
 import type { EncodeOptions, PipelineResult } from "../types/index.ts";
 import { DEFAULT_CONFIG, createEncodingConfig, validateConfig } from "../config/settings.ts";
 import { createArchive } from "../utils/archive.ts";
-import { compress } from "../utils/compression.ts";
-import {
-  encodeToPixels,
-  calculateRequiredFrames24Bit
-} from "../core/encoder.ts";
+import { compress, compressFileToFile } from "../utils/compression.ts";
+import { encodeToPixels, calculateRequiredFrames24Bit } from "../core/encoder.ts";
 import { buildGlobalHeader, serializeHeader } from "../core/protocol.ts";
 import { VideoOutputStream } from "../core/ffmpegStream.ts";
-import { createBrotliCompress, constants } from "zlib";
-import { pipeline } from "stream/promises";
-import { createReadStream, createWriteStream, statSync } from "fs";
+import { EncryptionService } from "../core/encryption.ts";
+import { rmSync, mkdirSync, existsSync, statSync, type Stats } from "fs";
+import { basename } from "path";
 
-/**
- * Main encoding pipeline (24-bit True Color only)
- */
+const IN_MEMORY_LIMIT = 50 * 1024 * 1024; // 50MB
+const VIDEO_FILENAME = "output.mkv";
+
+/** Encode a single part. Returns the path to the produced video. */
 export async function encodePipeline(
   options: EncodeOptions
-): Promise<PipelineResult<string[]>> {
+): Promise<PipelineResult<string>> {
   try {
-    console.log("Starting encoding pipeline...");
+    const stats = statSync(options.inputFile);
 
-    const fs = await import("fs");
-    const stats = fs.statSync(options.inputFile);
-
-    // switch to stream mode for large files/folders
-    if (stats.isDirectory() || stats.size > 50 * 1024 * 1024) {
-      return await encodeFromFile(
-        options.inputFile,
-        options,
-        stats.isDirectory()
-      );
+    if (stats.isDirectory() || stats.size > IN_MEMORY_LIMIT) {
+      return await encodeFromFile(options, stats);
     }
 
-    // Small file memory mode
-    const fileData = await Bun.file(options.inputFile).arrayBuffer().then(b => new Uint8Array(b));
-    const metadata = {
-      name: options.inputFile.split(/[/\\]/).pop() || "data",
-      size: stats.size,
-      mimeType: options.mimeType || "application/octet-stream",
-      checksum: "TODO",
-      createdAt: stats.birthtime,
-      modifiedAt: stats.mtime,
-    };
+    return await encodeInMemory(options, stats);
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
+// ─── in-memory path (small files) ──────────────────────────────────────────
+async function encodeInMemory(
+  options: EncodeOptions,
+  stats: Stats
+): Promise<PipelineResult<string>> {
+  const fileData = new Uint8Array(await Bun.file(options.inputFile).arrayBuffer());
+  const metadata: FileMeta = {
+    name: options.originalName ?? basename(options.inputFile),
+    size: options.originalSize ?? stats.size,
+    mimeType: options.mimeType || "application/octet-stream",
+    checksum: "N/A",
+    createdAt: stats.birthtime,
+    modifiedAt: stats.mtime,
+  };
 
-    console.log(`Read input: ${options.inputFile} (${fileData.length} bytes)`);
+  const { payload, compressed, encrypted } = await transformPayload(
+    fileData,
+    options.compress,
+    options.encryptionService ?? null
+  );
 
-    // Compression
-    let dataToProcess = fileData;
-    let isCompressed = false;
-    if (options.compress !== false) {
-      const compressed = compress(fileData);
-      if (options.compress === true || compressed.length < fileData.length) {
-        dataToProcess = new Uint8Array(compressed.buffer as ArrayBuffer);
-        isCompressed = true;
+  return writeVideo(payload, metadata, options, compressed, encrypted);
+}
+
+// ─── streaming path (large files, directories) ──────────────────────────────
+async function encodeFromFile(
+  options: EncodeOptions,
+  stats: Stats
+): Promise<PipelineResult<string>> {
+  const isDirectory = stats.isDirectory();
+  let inputToEncode = options.inputFile;
+  const tempPaths: string[] = [];
+
+  try {
+    // 1. Archive directories so the header can name the resulting blob.
+    if (isDirectory) {
+      const result = await createArchive(options.inputFile);
+      if (result.type === "file") {
+        inputToEncode = result.path;
+        tempPaths.push(result.path);
+      } else {
+        const tempArchive = `${options.inputFile}.mirr-archive-${Date.now()}.bin`;
+        await Bun.write(tempArchive, result.data);
+        inputToEncode = tempArchive;
+        tempPaths.push(tempArchive);
       }
     }
 
-    const frameWidth = options.frameWidth || DEFAULT_CONFIG.FRAME_WIDTH;
-    const frameHeight = options.frameHeight || DEFAULT_CONFIG.FRAME_HEIGHT;
+    // 2. Compress (Brotli) → temp file. Only if the user asked for it AND it
+    //    actually shrinks the data.
+    let compressed = false;
+    if (options.compress === true) {
+      const compressedPath = `${inputToEncode}.br`;
+      await compressFileToFile(inputToEncode, compressedPath);
+      const compressedSize = statSync(compressedPath).size;
+      if (compressedSize < statSync(inputToEncode).size) {
+        tempPaths.push(inputToEncode); // delete the uncompressed original
+        inputToEncode = compressedPath;
+        tempPaths.push(compressedPath);
+        compressed = true;
+      } else {
+        // Compression didn't help — discard the .br and keep the raw file.
+        tempPaths.push(compressedPath);
+      }
+    }
 
-    // Always use paletteSize 0 (True Color)
-    const config = createEncodingConfig(0, 1, false, isCompressed, frameWidth, frameHeight);
-    validateConfig(config);
+    // 3. Read final payload into memory (bounded by multi-part chunk size).
+    const payload = new Uint8Array(await Bun.file(inputToEncode).arrayBuffer());
 
-    const header = await buildGlobalHeader(config, metadata, dataToProcess.length, "NONE", false);
-    const headerBytes = await serializeHeader(header);
+    // 4. Encrypt if requested (produces a new payload).
+    let encrypted = false;
+    let finalPayload = payload;
+    if (options.encryptionService) {
+      finalPayload = new Uint8Array(await options.encryptionService.encrypt(payload));
+      encrypted = true;
+    }
 
-    const fullData = new Uint8Array(headerBytes.length + dataToProcess.length);
-    fullData.set(headerBytes, 0);
-    fullData.set(dataToProcess, headerBytes.length);
+    const finalStats = statSync(options.inputFile);
+    const metadata: FileMeta = {
+      name: options.originalName ?? (isDirectory ? "archive.bin" : basename(options.inputFile)),
+      size: options.originalSize ?? Number(finalStats.size),
+      mimeType: options.mimeType || (isDirectory ? "application/x-mirr-archive" : "application/octet-stream"),
+      checksum: "N/A",
+      createdAt: finalStats.birthtime,
+      modifiedAt: finalStats.mtime,
+    };
 
-    const pixelsPerFrame = frameWidth * frameHeight;
-    const totalFramesNeeded = calculateRequiredFrames24Bit(fullData.length, pixelsPerFrame);
+    return writeVideo(finalPayload, metadata, options, compressed, encrypted);
+  } finally {
+    for (const p of tempPaths) {
+      try {
+        if (existsSync(p)) rmSync(p, { force: true });
+      } catch (e) { console.warn(`[Cleanup] ${p}: ${e}`); }
+    }
+  }
+}
 
-    console.log(`Mode: True Color (24-bit) | Frames: ${totalFramesNeeded}`);
+// ─── pure helpers ──────────────────────────────────────────────────────────
 
-    await fs.mkdirSync(options.outputPath, { recursive: true });
-    const videoPath = `${options.outputPath}/output.mkv`;
-    const videoStream = new VideoOutputStream({
-      width: frameWidth,
-      height: frameHeight,
-      fps: options.fps || 30,
-      outputPath: videoPath,
-      codec: options.codec
-    });
+interface FileMeta {
+  name: string;
+  size: number;
+  mimeType: string;
+  checksum: string;
+  createdAt: Date;
+  modifiedAt: Date;
+}
 
+/** Compress and/or encrypt a buffer. */
+async function transformPayload(
+  data: Uint8Array,
+  compressFlag: boolean,
+  encryptionService: EncryptionService | null
+): Promise<{ payload: Uint8Array; compressed: boolean; encrypted: boolean }> {
+  let payload = data;
+  let compressed = false;
+  let encrypted = false;
+
+  if (compressFlag) {
+    const out = compress(payload);
+    // If Brotli grew the data (e.g. already-compressed input), keep the original.
+    if (out.length < payload.length) {
+      payload = new Uint8Array(out);
+      compressed = true;
+    }
+  }
+
+  if (encryptionService) {
+    payload = await encryptionService.encrypt(payload);
+    encrypted = true;
+  }
+
+  return { payload, compressed, encrypted };
+}
+
+/** Write header + payload to a lossless video. */
+async function writeVideo(
+  payload: Uint8Array,
+  metadata: FileMeta,
+  options: EncodeOptions,
+  compressed: boolean,
+  encrypted: boolean
+): Promise<PipelineResult<string>> {
+  const frameWidth = options.frameWidth;
+  const frameHeight = options.frameHeight;
+
+  const config = createEncodingConfig(0, 1, encrypted, compressed, frameWidth, frameHeight);
+  validateConfig(config);
+
+  const header = buildGlobalHeader(config, metadata, payload.length);
+  const headerBytes = serializeHeader(header);
+
+  // Concatenate: [header][payload]
+  const fullData = new Uint8Array(headerBytes.length + payload.length);
+  fullData.set(headerBytes, 0);
+  fullData.set(payload, headerBytes.length);
+
+  const pixelsPerFrame = frameWidth * frameHeight;
+  const bytesPerFrame = pixelsPerFrame * 3;
+  const totalFramesNeeded = calculateRequiredFrames24Bit(fullData.length, pixelsPerFrame);
+
+  mkdirSync(options.outputPath, { recursive: true });
+  const videoPath = `${options.outputPath}/${VIDEO_FILENAME}`;
+  const videoStream = new VideoOutputStream({
+    width: frameWidth,
+    height: frameHeight,
+    fps: options.fps || 30,
+    outputPath: videoPath,
+    codec: options.codec,
+  });
+
+  try {
     let offset = 0;
     let frameIndex = 0;
-    const bytesPerFrame = pixelsPerFrame * 3;
-
     while (offset < fullData.length) {
       const chunk = fullData.slice(offset, offset + bytesPerFrame);
       const pixelBuffer = encodeToPixels(chunk, frameWidth, frameHeight);
       await videoStream.writeFrame(pixelBuffer);
       offset += bytesPerFrame;
       frameIndex++;
-      if (options.showProgress) {
-        process.stdout.write(`\rEncoded frame ${frameIndex}/${totalFramesNeeded}`);
-      }
-    }
-
-    await videoStream.close();
-    console.log(`\n✓ Created video: ${videoPath}`);
-    return { success: true, data: [videoPath] };
-
-  } catch (error) {
-    return { success: false, error: String(error) };
-  }
-}
-
-async function encodeFromFile(
-  filePath: string,
-  options: EncodeOptions,
-  isDirectory: boolean
-): Promise<PipelineResult<string[]>> {
-
-  const fs = await import("fs");
-  let inputToEncode = filePath;
-  let tempArchive = "";
-
-  if (isDirectory) {
-    console.log(`Input is a directory - creating archive...`);
-    const result = await createArchive(filePath);
-    if (result.type === 'file') {
-      inputToEncode = result.path;
-      tempArchive = result.path;
-    } else {
-      tempArchive = "temp_archive_mem.bin";
-      await Bun.write(tempArchive, result.data);
-      inputToEncode = tempArchive;
-    }
-  }
-
-  // Handle compression for large files
-  let isCompressed = false;
-  if (options.compress) {
-    console.log(`Compressing input data (Brotli)...`);
-    const compressedPath = `${inputToEncode}.br`;
-
-    await pipeline(
-      createReadStream(inputToEncode),
-      createBrotliCompress({
-        params: {
-          [constants.BROTLI_PARAM_QUALITY]: 4,
-          [constants.BROTLI_PARAM_LGWIN]: 24
-        }
-      }),
-      createWriteStream(compressedPath)
-    );
-
-    // SAVE DISK SPACE: If we compressed a chunk or temp file, delete the original .bin immediately
-    if (inputToEncode.includes('.part') || inputToEncode.includes('.cftff-temp')) {
-      try { fs.unlinkSync(inputToEncode); } catch { }
-    }
-
-    // Clean up uncompressed temp archive if it exists
-    if (tempArchive && inputToEncode === tempArchive) {
-      try { fs.unlinkSync(tempArchive); } catch { }
-    }
-
-    inputToEncode = compressedPath;
-    tempArchive = compressedPath; // Ensure it gets cleaned up later
-    isCompressed = true;
-    console.log(`✓ Compressed data: ${isCompressed}`);
-  }
-
-  const file = Bun.file(inputToEncode);
-  const fileSize = file.size;
-  const frameWidth = options.frameWidth || DEFAULT_CONFIG.FRAME_WIDTH;
-  const frameHeight = options.frameHeight || DEFAULT_CONFIG.FRAME_HEIGHT;
-
-  const config = createEncodingConfig(0, 1, false, isCompressed, frameWidth, frameHeight);
-  const metadata = {
-    name: "streamed_data",
-    size: fileSize,
-    mimeType: options.mimeType || (isDirectory ? "application/x-cftff-archive" : "application/octet-stream"),
-    checksum: "N/A",
-    createdAt: new Date(),
-    modifiedAt: new Date()
-  };
-
-  const header = await buildGlobalHeader(config, metadata, fileSize, "NONE", false);
-  const headerBytes = await serializeHeader(header);
-
-  await fs.mkdirSync(options.outputPath, { recursive: true });
-  const videoPath = `${options.outputPath}/output.mkv`;
-  const videoStream = new VideoOutputStream({
-    width: frameWidth,
-    height: frameHeight,
-    fps: options.fps || 30,
-    outputPath: videoPath,
-    codec: options.codec
-  });
-
-  const bytesPerFrame = frameWidth * frameHeight * 3;
-  let buffer: Uint8Array = headerBytes;
-  const stream = file.stream();
-  const reader = stream.getReader();
-  let frameIndex = 0;
-  let totalRead = 0;
-
-  console.log("Streaming encoding...");
-
-  while (true) {
-    const { done, value } = await reader.read();
-    const chunkToAdd = value || new Uint8Array(0);
-    totalRead += chunkToAdd.length;
-
-    const newBuffer = new Uint8Array(buffer.length + chunkToAdd.length);
-    newBuffer.set(buffer);
-    newBuffer.set(chunkToAdd, buffer.length);
-    buffer = newBuffer;
-
-    while (buffer.length >= bytesPerFrame) {
-      const frameData = buffer.slice(0, bytesPerFrame);
-      buffer = buffer.slice(bytesPerFrame);
-      const pixels = encodeToPixels(frameData, frameWidth, frameHeight);
-      await videoStream.writeFrame(pixels);
-      frameIndex++;
-
       if (options.showProgress && frameIndex % 30 === 0) {
-        const memory = process.memoryUsage();
-        const percent = Math.min(100, (totalRead / fileSize * 100)).toFixed(1);
-        console.log(`Frame ${frameIndex} (${percent}%) | RSS: ${(memory.rss / 1024 / 1024).toFixed(0)}MB`);
+        const percent = Math.min(100, (offset / fullData.length * 100)).toFixed(1);
+        process.stdout.write(`\rEncoded frame ${frameIndex}/${totalFramesNeeded} (${percent}%)`);
       }
     }
-    if (done) break;
+    await videoStream.close();
+    return { success: true, data: videoPath };
+  } catch (err) {
+    // Best-effort: close the stream so FFmpeg flushes what it has.
+    try { await videoStream.close(); } catch { /* already failed */ }
+    throw err;
   }
-
-  if (buffer.length > 0) {
-    const pixels = encodeToPixels(buffer, frameWidth, frameHeight);
-    await videoStream.writeFrame(pixels);
-    frameIndex++;
-  }
-
-  await videoStream.close();
-  if (tempArchive) {
-    try {
-      const { dirname, resolve, sep, basename } = await import("path");
-      const fullPath = resolve(tempArchive);
-
-      // If the file is directly inside a .cftff-temp- directory, delete the whole directory
-      const parentDir = dirname(fullPath);
-      if (basename(parentDir).startsWith(".cftff-temp-")) {
-        fs.rmSync(parentDir, { recursive: true, force: true });
-      } else {
-        fs.unlinkSync(fullPath);
-      }
-    } catch (e) {
-      console.warn(`[Cleanup Warning] Could not delete ${tempArchive}: ${e}`);
-    }
-  }
-
-  return { success: true, data: [videoPath] };
 }

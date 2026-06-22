@@ -1,206 +1,166 @@
-import type { EncodeOptions, DecodeOptions } from "./types/index.ts";
-import { DEFAULT_CONFIG } from "./config/settings.ts";
-import { encodePipeline } from "./pipeline/encodePipeline.ts";
-import { decodePipeline } from "./pipeline/decodePipeline.ts";
+#!/usr/bin/env bun
+/**
+ * mirr CLI — single entry point.
+ *
+ *   mirr encode <input> <output> [options]
+ *   mirr decode <input> <output> [options]
+ *
+ * Dispatches to the engine layer; the engine decides single-part vs multi-part
+ * and owns all the size-based and archive logic. This file only parses argv.
+ */
 
-/** Print CLI usage information */
-function printUsage() {
-  console.log(`
-CFTFF - Convert Files to Frames/Files
-A tool for encoding files as visual data in images
+import { encode } from "./engine/encode.ts";
+import { decode } from "./engine/decode.ts";
+import type { EncodeOptions, DecodeOptions } from "./types/index.ts";
+
+const USAGE = `
+mirr — project any file into a lossless video
+
+Encode any file or directory as a lossless 24-bit RGB video.
+Large inputs (>1.5GB) are automatically split into multi-part videos.
 
 Usage:
-  bun run src/cli.ts encode <input> <output> [options]
-  bun run src/cli.ts decode <input> <output> [options]
+  mirr encode <input> <output> [options]
+  mirr decode <input> <output> [options]
 
-Commands:
-  encode    Encode a file or folder into visual frames
-  decode    Decode visual frames back to a file
+Encode options:
+  --compress            Compress payload with Brotli before encoding
+  --encrypt             Encrypt payload with hybrid RSA + AES-GCM
+  --frame <WxH>         Frame dimensions (default: 1920x1080)
+  --fps <n>             Frames per second (default: 30)
+  --codec <name>        Video codec: ffv1, libx264rgb, libx265 (default: ffv1)
+  --mime <type>         Override the input MIME type
+  --no-progress         Hide progress indicators
 
-Encode Options:
-  --encryption        Enable RSA encryption (overrides ENABLE_ENCRYPTION env)
-  --compress          Enable gzip compression
-  --output <format>   Output format: video (default), frames, single-image
-  --frame <WxH>       Frame dimensions (default: 1920x1080)
-  --fps <n>           Frames per second for video (default: 30)
-  --codec <name>      Video codec: libx264rgb, ffv1, libx265 (default: libx264rgb)
-  --threads <n>       Number of threads for parallel processing
-  --palette-size <n>  Number of colors in palette (default: 16)
-  --block-size <n>    Size of color blocks in pixels (default: 4)
-  --keep-frames       Keep PNG frames after video creation
-  --no-progress       Hide progress indicators
-
-Environment Variables:
-  ENABLE_ENCRYPTION   Set to 'true' to enable encryption by default
-  RSA_PUBLIC_KEY      Public key for encryption (PEM format)
-  RSA_PRIVATE_KEY     Private key for decryption (PEM format)
-
-Encryption Priority:
-  1. --encryption flag (if present, encryption is enabled)
-  2. ENABLE_ENCRYPTION env variable (if 'true', encryption is enabled)
-  3. Default: encryption disabled
-
-Decode Options:
-  --extract           Extract archive after decoding
-  --threads <n>       Number of threads for parallel processing
-  --palette-size <n>  Number of colors in palette (must match encode)
-  --block-size <n>    Size of color blocks (must match encode)
+Decode options:
+  --no-extract          Do not auto-extract directory archives
+  --keep-compressed     Stop after decryption; do not decompress (output = compressed bytes)
+  --no-progress         Hide progress indicators
 
 Examples:
-  # Encode a file with compression to video (default)
-  bun run src/cli.ts encode test.txt output --compress
+  mirr encode test.txt output
+  mirr encode my-folder output
+  mirr encode data.bin output --compress
+  mirr encode secrets.bin safe --encrypt
+  mirr encode input.txt output --fps 60 --frame 3840x2160
+  mirr decode output result.txt
+  mirr decode output recovered-folder
+  mirr decode output compressed.bin --keep-compressed
+`;
 
-  # Encode with custom frame size and video output
-  bun run src/cli.ts encode test.txt output --frame 3840x2160 --fps 2
-
-  # Encode to single optimized image
-  bun run src/cli.ts encode test.txt output --output single-image
-
-  # Encode to individual frame images
-  bun run src/cli.ts encode test.txt output --output frames
-
-  # Decode with extraction
-  bun run src/cli.ts decode output result.txt --extract
-
-  # Encode with encryption
-  bun run src/cli.ts encode secret.txt output --encryption
-`);
+interface ParsedArgs {
+  command: string;
+  positional: string[];
+  flags: Record<string, string | boolean>;
 }
 
-/** Parse command line arguments */
-function parseCLIArgs(): {
-  command: string;
-  args: string[];
-  options: any;
-} {
-  const args = process.argv.slice(2);
-
+function parseArgs(argv: string[]): ParsedArgs {
+  const args = argv.slice(2);
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
-    printUsage();
+    console.log(USAGE);
     process.exit(0);
   }
 
   const command = args[0];
-  const commandArgs: string[] = [];
-  const options: any = {};
+  const positional: string[] = [];
+  const flags: Record<string, string | boolean> = {};
 
-  // Parse command arguments and options
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
-
     if (arg.startsWith("--")) {
-      // It's an option
-      if (arg === "--encrypt" || arg === "--encryption") {
-        options.encrypt = true;
-      } else if (arg === "--compress") {
-        options.compress = true;
-      } else if (arg === "--output" && args[i + 1]) {
-        options.output = args[i + 1];
+      const key = arg.slice(2);
+      const next = args[i + 1];
+      // If the next token exists and is not another flag, treat it as the value.
+      if (next !== undefined && !next.startsWith("--")) {
+        flags[key] = next;
         i++;
-      } else if (arg === "--frame" && args[i + 1]) {
-        const [w, h] = args[i + 1].split('x').map(n => parseInt(n));
-        if (w && h) {
-          options.frameWidth = w;
-          options.frameHeight = h;
-        }
-        i++;
-      } else if (arg === "--fps" && args[i + 1]) {
-        options.fps = parseInt(args[i + 1]);
-        i++;
-      } else if (arg === "--codec" && args[i + 1]) {
-        options.codec = args[i + 1];
-        i++;
-      } else if (arg === "--extract") {
-        options.extract = true;
-      } else if (arg === "--no-extract") {
-        options.extract = false;
-      } else if (arg === "--threads" && args[i + 1]) {
-        options.threads = parseInt(args[i + 1]);
-        i++;
-      } else if (arg === "--mime" && args[i + 1]) {
-        options.mimeType = args[i + 1];
-        i++;
-      } else if (arg === "--palette-size" && args[i + 1]) {
-        options.paletteSize = parseInt(args[i + 1]);
-        i++;
-      } else if (arg === "--block-size" && args[i + 1]) {
-        options.blockSize = parseInt(args[i + 1]);
-        i++;
-      } else if (arg === "--no-progress") {
-        options.noProgress = true;
-      } else if (arg === "--keep-frames") {
-        options.keepFrames = true;
+      } else {
+        flags[key] = true;
       }
     } else {
-      // It's a command argument
-      commandArgs.push(arg);
+      positional.push(arg);
     }
   }
 
-  return { command, args: commandArgs, options };
+  return { command, positional, flags };
 }
 
-/** Main CLI entry point */
+function parseFrame(s: string): { width: number; height: number } | null {
+  const match = s.match(/^(\d+)x(\d+)$/);
+  if (!match) return null;
+  return { width: parseInt(match[1]), height: parseInt(match[2]) };
+}
+
+function asInt(v: string | boolean | undefined, fallback: number): number {
+  if (typeof v !== "string") return fallback;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 async function main() {
-  const { command, args, options } = parseCLIArgs();
+  const { command, positional, flags } = parseArgs(process.argv);
 
   if (command === "encode") {
-    if (args.length < 2) {
-      console.error("Error: encode requires <input> and <output> arguments");
-      printUsage();
+    if (positional.length < 2) {
+      console.error("Error: encode requires <input> and <output>");
+      console.log(USAGE);
       process.exit(1);
     }
+    const [inputFile, outputPath] = positional;
 
-    const outputFormat = options.output || 'video'; // Default to video
-    const encodeOptions: EncodeOptions = {
-      inputFile: args[0],
-      outputPath: args[1],
-      encrypt: options.encrypt || false,
-      compress: options.compress || false,
-      outputFormat: outputFormat as 'video' | 'frames' | 'single-image',
-      fps: options.fps || DEFAULT_CONFIG.FPS,
-      threads: options.threads,
-      paletteSize: options.paletteSize || DEFAULT_CONFIG.PALETTE_SIZE,
-      blockSize: options.blockSize || DEFAULT_CONFIG.BLOCK_SIZE,
-      frameWidth: options.frameWidth || DEFAULT_CONFIG.FRAME_WIDTH,
-      frameHeight: options.frameHeight || DEFAULT_CONFIG.FRAME_HEIGHT,
-      showProgress: !options.noProgress,
-      keepFrames: options.keepFrames || false,
-      mimeType: options.mimeType,
-      codec: options.codec || 'libx264rgb',
+    const options: Partial<EncodeOptions> = {
+      compress: Boolean(flags.compress),
+      encrypt: Boolean(flags.encrypt),
+      fps: asInt(flags.fps, 0) || undefined,
+      mimeType: typeof flags.mime === "string" ? flags.mime : undefined,
+      codec: (typeof flags.codec === "string" ? flags.codec : "ffv1") as EncodeOptions["codec"],
+      showProgress: !flags["no-progress"],
     };
 
-    const result = await encodePipeline(encodeOptions);
-    if (result.success) {
-      console.log(`\n✓ Encoding complete: ${result.data}`);
-    } else {
+    if (typeof flags.frame === "string") {
+      const dims = parseFrame(flags.frame);
+      if (!dims) {
+        console.error(`Invalid --frame value: ${flags.frame}. Expected WxH (e.g. 1920x1080).`);
+        process.exit(1);
+      }
+      options.frameWidth = dims.width;
+      options.frameHeight = dims.height;
+    }
+
+    const result = await encode(inputFile, outputPath, options);
+    if (!result.success) {
       console.error(`\n✗ Encoding failed: ${result.error}`);
       process.exit(1);
     }
-  }
-  else if (command === "decode") {
-    if (args.length < 2) {
-      console.error("Error: decode requires <input> and <output> arguments");
-      printUsage();
+    console.log(`\n✓ Encoding complete: ${result.data}`);
+  } else if (command === "decode") {
+    if (positional.length < 2) {
+      console.error("Error: decode requires <input> and <output>");
+      console.log(USAGE);
       process.exit(1);
     }
-    const decodeOptions: DecodeOptions = {
-      inputPath: args[0],
-      outputPath: args[1],
-      extract: options.extract,
-      paletteSize: options.paletteSize || DEFAULT_CONFIG.PALETTE_SIZE,
-      blockSize: options.blockSize || DEFAULT_CONFIG.BLOCK_SIZE,
-      threads: options.threads,
-      showProgress: !options.noProgress,
+    const [inputPath, outputPath] = positional;
+
+    const options: Partial<DecodeOptions> = {
+      // undefined lets the pipeline auto-extract for archives; false forces raw.
+      extract: flags["no-extract"] ? false : undefined,
+      showProgress: !flags["no-progress"],
+      keepCompressed: Boolean(flags["keep-compressed"]),
     };
 
-    const result = await decodePipeline(decodeOptions);
-    if (result.success) {
-      console.log(`\n✓ Decoding complete: ${result.data}`);
-    } else {
+    const result = await decode(inputPath, outputPath, options);
+    if (!result.success) {
       console.error(`\n✗ Decoding failed: ${result.error}`);
       process.exit(1);
     }
+    console.log(`\n✓ Decoding complete: ${result.data}`);
+  } else if (command === "--version" || command === "-v") {
+    const pkg = await Bun.file("package.json").json().catch(() => ({ version: "unknown" }));
+    console.log(`mirr v${pkg.version}`);
+  } else {
+    console.error(`Unknown command: ${command}`);
+    console.log(USAGE);
+    process.exit(1);
   }
 }
 

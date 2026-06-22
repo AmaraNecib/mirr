@@ -1,8 +1,9 @@
 import type { EncodingConfig } from "../types/index.ts";
 
 export const DEFAULT_CONFIG = {
-  VERSION: 2,
-  MAGIC: "CFTFF",
+  VERSION: 3,
+  /** 5-byte ASCII magic at the head of every mirr video. */
+  MAGIC: "MIRR\x00",
   FRAME_WIDTH: 1920,
   FRAME_HEIGHT: 1080,
   BLOCK_SIZE: 1, // Forced to 1 for True Color
