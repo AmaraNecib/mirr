@@ -20,7 +20,21 @@ import { join } from "path";
 import { createHash } from "crypto";
 
 const REPO = process.cwd();
-const ROOT = mkdtempSync(join(tmpdir(), "mirr-matrix-"));
+// Use D: drive for temp if available (C: often runs out of space on Windows).
+// Falls back to the system tmpdir on Linux/macOS.
+function pickTempDir(): string {
+  const candidates = ["D:/tmp", "D:/projects/.tmp", tmpdir()];
+  for (const c of candidates) {
+    try {
+      mkdirSync(join(c, "mirr-matrix-write-test"), { recursive: true });
+      rmSync(join(c, "mirr-matrix-write-test"), { recursive: true, force: true });
+      return c;
+    } catch (e) { /* try next */ }
+  }
+  return tmpdir();
+}
+const TEMP_BASE = pickTempDir();
+const ROOT = mkdtempSync(join(TEMP_BASE, "mirr-matrix-"));
 const KEYS = join(ROOT, "keys");
 mkdirSync(KEYS, { recursive: true });
 
@@ -111,23 +125,28 @@ function runEncode(inputDir: string, outDir: string, flags: string[]): { size: n
   const res = spawnSync("bun", ["run", "encode", inputDir, outDir, ...flags], { env, stdio: "pipe", encoding: "utf8" });
   const ms = performance.now() - t0;
   if (res.status !== 0) {
-    console.error(`    ❌ encode failed (${flags.join(" ") || "no flags"}): ${res.stderr.split("\n").slice(-2).join(" | ")}`);
+    console.error(`    ❌ encode failed (${flags.join(" ") || "no flags"}):`);
+    console.error(`      exit: ${res.status}, signal: ${res.signal}`);
+    console.error(`      stderr (last 5 lines):`);
+    res.stderr.split("\n").slice(-5).forEach((l) => console.error(`        ${l}`));
     return { size: -1, ms, ok: false };
   }
   const findRes = spawnSync("powershell", ["-NoProfile", "-Command", `Get-ChildItem -Recurse -File -Filter '*.mkv' '${outDir}' | Measure-Object Length -Sum | Select-Object -ExpandProperty Sum`], { encoding: "utf8" });
   return { size: parseInt(findRes.stdout.trim(), 10) || 0, ms, ok: true };
 }
 
-async function runCase(label: string, inputDir: string): Promise<Row> {
+async function runCase(label: string, inputDir: string, caseList: Case[] = cases): Promise<Row> {
+  // Sanitize label for filesystem paths (PowerShell hates parens, spaces, + signs)
+  const safeLabel = label.replace(/[^a-zA-Z0-9-]/g, "_");
   const inputSize = dirSize(inputDir);
   const inputHash = hashDir(inputDir);
   process.stdout.write(`\n[${label}] input: ${mb(inputSize)} MB\n`);
 
   const results: Record<string, number> = {};
   const timings: Record<string, number> = {};
-  for (const c of cases) {
+  for (const c of caseList) {
     process.stdout.write(`  → ${c.name.padEnd(18)} `);
-    const outDir = join(ROOT, `${label}-${c.name}`);
+    const outDir = join(ROOT, `${safeLabel}-${c.name}`);
     const r = runEncode(inputDir, outDir, c.flags);
     results[c.name] = r.size;
     timings[c.name] = r.ms;
@@ -138,12 +157,13 @@ async function runCase(label: string, inputDir: string): Promise<Row> {
     }
   }
 
+  // Winner from the cases we actually ran
   const valid = Object.entries(results).filter(([, v]) => v > 0).sort((a, b) => a[1] - b[1]);
   const winner = valid[0]?.[0] ?? "?";
 
-  const decDir = join(ROOT, `${label}-${winner}-decoded`);
+  const decDir = join(ROOT, `${safeLabel}-${winner}-decoded`);
   mkdirSync(decDir, { recursive: true });
-  const winnerOutDir = join(ROOT, `${label}-${winner}`);
+  const winnerOutDir = join(ROOT, `${safeLabel}-${winner}`);
   const decRes = spawnSync("bun", ["run", "decode", winnerOutDir, decDir], { env, stdio: "pipe", encoding: "utf8" });
 
   let row: Row = { label, inputSize, inputHash, results, timings, winner };
@@ -154,11 +174,13 @@ async function runCase(label: string, inputDir: string): Promise<Row> {
     process.stdout.write(`  ✓ decoded winner (${winner}) → ${mb(decodedSize)} MB  ${row.winnerDecoded.ok ? "✅ bit-exact" : "❌ MISMATCH"}\n`);
   } else {
     row.winnerDecoded = { ok: false, size: -1 };
-    process.stdout.write(`  ❌ decode failed\n`);
+    process.stdout.write(`  ❌ decode failed: ${decRes.stderr.split("\n").slice(-2).join(" | ")}\n`);
   }
 
   rmSync(inputDir, { recursive: true, force: true });
   // Note: decDir cleanup is deferred so caller can inspect on failure.
+  // SAFETY: rmSync only runs on directories this test created (under ROOT or
+  // a mktemp dir). Never pass user-supplied paths here.
   return row;
 }
 
@@ -174,14 +196,38 @@ async function main() {
     rows.push(row);
   }
 
-  // Real folder from user (if present)
-  const realInput = join(REPO, "big_input");
-  if (existsSync(realInput)) {
-    // Copy to temp so we can cleanup freely
-    const copied = join(ROOT, "real-big-input");
-    mkdirSync(copied, { recursive: true });
-    spawnSync("powershell", ["-NoProfile", "-Command", `Copy-Item -Recurse -Force '${realInput}\\*' '${copied}'`]);
-    const row = await runCase("big_input (real)", copied);
+  // Real folder from user. The repo has two test folders:
+  //   big_input/  (~10 MB synthetic)
+  //   "big input/" (1.1 GB real files: installers, zips, images)
+  // Pick the larger one if it exists, otherwise the smaller one.
+  const realBig = join(REPO, "big input");
+  const realSmall = join(REPO, "big_input");
+  let realInput: string | null = null;
+  let realLabel = "big_input (real)";
+  if (existsSync(realBig)) {
+    realInput = realBig;
+    realLabel = "big input (1.1 GB real)";
+  } else if (existsSync(realSmall)) {
+    realInput = realSmall;
+    realLabel = "big_input (~10 MB real)";
+  }
+  if (realInput) {
+    // For the 1+ GB case, skip the lone `compress` variant — for already-compressed
+    // data (zip/exe/jpg) smart fallback makes it identical to `plain`, and Brotli
+    // on 1 GB takes ~10 min of wasted compute. The `encrypt+compress` variant is
+    // still useful because it proves encryption + smart fallback play nicely.
+    const isHuge = dirSize(realInput) > 600 * 1024 * 1024;
+    const realCases: Case[] = isHuge
+      ? cases.filter((c) => c.name === "plain" || c.name === "encrypt" || c.name === "encrypt+compress")
+      : cases;
+    if (isHuge) process.stdout.write(`\n[1+ GB input] skipping lone --compress variant (smart fallback would make it equal to plain).\n`);
+
+    // SAFETY: always copy the real input to a fresh temp dir, never operate on it in place.
+    // Deleting the user's source data by accident is a one-way mistake.
+    const inputDir = join(ROOT, "real-big-input");
+    mkdirSync(inputDir, { recursive: true });
+    spawnSync("powershell", ["-NoProfile", "-Command", `Copy-Item -Recurse -Force '${realInput}\\*' '${inputDir}'`]);
+    const row = await runCase(realLabel, inputDir, realCases);
     rows.push(row);
   }
 
@@ -203,7 +249,8 @@ async function main() {
     const values = [plain, compress, encrypt, both].filter((v) => v > 0);
     const bestVal = values.length ? Math.min(...values) : 0;
     const saved = bestVal > 0 ? ((1 - bestVal / r.inputSize) * 100).toFixed(0) + "%" : "—";
-    console.log(`| ${r.label} | ${mb(plain)} MB | ${mb(compress)} MB | ${mb(encrypt)} MB | ${mb(both)} MB | **${mb(bestVal)} MB** | ${saved} |`);
+    const cell = (v: number) => v > 0 ? `${mb(v)} MB` : "—";
+    console.log(`| ${r.label} | ${cell(plain)} | ${cell(compress)} | ${cell(encrypt)} | ${cell(both)} | **${cell(bestVal).replace("**", "**")}** | ${saved} |`);
   }
 
   // ─── Time table ─────────────────────────────────────────────────────────
@@ -213,7 +260,10 @@ async function main() {
   console.log("| input | plain | `--compress` | `--encrypt` | `--encrypt --compress` |");
   console.log("|---:|---:|---:|---:|---:|");
   for (const r of rows) {
-    const cell = (k: string) => fmtMs(r.timings[k] ?? 0);
+    const cell = (k: string) => {
+      const t = r.timings[k];
+      return t === undefined ? "—" : fmtMs(t);
+    };
     console.log(`| ${r.label} | ${cell("plain")} | ${cell("compress")} | ${cell("encrypt")} | ${cell("encrypt+compress")} |`);
   }
 

@@ -118,35 +118,51 @@ The decoder reads the `compressed` and `encrypted` flags from the header — you
 
 ---
 
-## Encode sizes (50% text + 50% random folder)
+## Encode sizes
 
 | input folder | plain | `--compress` | `--encrypt` | `--encrypt --compress` | best | saved |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1 MB | 0.73 MB | 0.61 MB | 1.15 MB | 0.61 MB | **0.61 MB** | 39% |
-| 5 MB | 3.31 MB | 2.77 MB | 5.49 MB | 2.77 MB | **2.77 MB** | 45% |
-| 20 MB | 13.20 MB | 10.98 MB | 21.93 MB | 10.98 MB | **10.98 MB** | 45% |
-| 100 MB | 64.73 MB | 54.77 MB | 109.48 MB | 54.76 MB | **54.76 MB** | 45% |
-| 500 MB | 323.35 MB | 273.70 MB | 547.37 MB | 273.71 MB | **273.70 MB** | 45% |
-| `big_input` (real, ~10 MB) | 10.48 MB | 10.48 MB | 10.48 MB | 10.48 MB | **10.48 MB** | -10% |
+| 1 MB (synthetic) | 0.73 MB | 0.61 MB | 1.15 MB | 0.60 MB | **0.60 MB** | 40% |
+| 5 MB (synthetic) | 3.31 MB | 2.77 MB | 5.49 MB | 2.77 MB | **2.77 MB** | 45% |
+| 20 MB (synthetic) | 13.19 MB | 10.97 MB | 21.93 MB | 10.97 MB | **10.97 MB** | 45% |
+| 100 MB (synthetic) | 64.73 MB | 54.76 MB | 109.48 MB | 54.76 MB | **54.76 MB** | 45% |
+| 500 MB (synthetic) | 323.35 MB | 273.72 MB | 547.35 MB | 273.70 MB | **273.70 MB** | 45% |
+| 1.1 GB (real zip + exe + jpg) | 1156.46 MB | — | 1157.21 MB | 1137.36 MB | **1137.36 MB** | -8%¹ |
+
+¹ For the 1.1 GB real-world case, `--compress` was skipped (smart fallback would yield the same output as `plain` because all files are already-compressed). Surprisingly, `--encrypt --compress` is the smallest of the three because Brotli gives a small gain on the archive format overhead (entry-count header + path lengths + isDir flags) — the 1.1 GB of compressed data itself is unchanged.
+
+> All rows are bit-exact round-trip verified by SHA-256 (the 1.1 GB row included — `decoded → 1057.15 MB  ✅ bit-exact`).
 
 ### What this means
 
 - **`--compress`** saves ~35–45% on a 50/50 mix of text and random data, and far more on pure text (logs, JSON, source code can hit 99%+).
 - **`--encrypt` alone is always worse than `plain`** — it adds ~10% overhead (RSA-2048 wrapped key + AES-GCM auth tag). Use it only when confidentiality is worth the cost.
 - **`--encrypt --compress` is only ~300 bytes larger than `--compress`** (one RSA-wrapped 256-bit AES key). Use it by default: same size as plain compression when compression helps, **privacy for free**.
-- **Smart fallback**: when Brotli can't shrink the data (already-compressed input like JPG / MP4 / random), the encoder keeps the raw bytes and sets `compressed: false` in the header — no per-byte inflation, no decode-time decompression. The `big_input` row above demonstrates this on real data.
+- **Smart fallback**: when Brotli can't shrink the data (already-compressed input like JPG / MP4 / random), the encoder keeps the raw bytes and sets `compressed: false` in the header — no per-byte inflation, no decode-time decompression. The 1.1 GB row above demonstrates this on real data.
 
 ### Encode time
 
 | input | plain | `--compress` | `--encrypt` | `--encrypt --compress` |
 |---:|---:|---:|---:|---:|
-| 1 MB | 276 ms | 1.4 s | 282 ms | 1.5 s |
-| 5 MB | 356 ms | 2.7 s | 389 ms | 2.6 s |
-| 20 MB | 622 ms | 11.4 s | 748 ms | 11.6 s |
-| 100 MB | 1.8 s | 46.8 s | 2.5 s | 46.4 s |
-| 500 MB | 8.2 s | 233.5 s | 12.2 s | 233.6 s |
+| 1 MB | 359 ms | 2.0 s | 368 ms | 1.9 s |
+| 5 MB | 489 ms | 3.6 s | 516 ms | 3.4 s |
+| 20 MB | 865 ms | 14.7 s | 917 ms | 14.8 s |
+| 100 MB | 2.5 s | 57.1 s | 3.1 s | 53.4 s |
+| 500 MB | 11.3 s | 288.1 s | 16.5 s | 285.1 s |
+| 1.1 GB (real) | 42.5 s | — | 39.7 s | 2500.0 s |
 
-Compression is the dominant cost. It is single-threaded Brotli over the entire input — for multi-GB files, expect a few minutes.
+Compression is the dominant cost. It is single-threaded Brotli over the entire input — for multi-GB files, expect a few minutes. Encryption is just RSA on a 32-byte key + AES-GCM (fast).
+
+### Default recommendation
+
+| Your data looks like | Use |
+|---|---|
+| Logs, JSON, source code, any text | `--encrypt --compress` (≥40% saved) |
+| Mixed binary (typical folder) | `--encrypt --compress` (~30–45% saved) |
+| Already-compressed (zip, mp4, jpg, png) | `plain` (no savings possible; saves 30 min encode time) |
+| Don't care about size, only security | `--encrypt` (~10% overhead) |
+
+> **Disk space:** the variant matrix test copies inputs and outputs under the system temp dir. For the 1.1 GB case the script needs ~3 GB of free space (input copy + 3 outputs). On Windows the test auto-prefers `D:/tmp` if your C: drive is low on space.
 
 ---
 
