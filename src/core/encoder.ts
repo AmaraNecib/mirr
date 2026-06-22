@@ -1,51 +1,29 @@
-import type { Color } from "../types/index.ts";
-
-/** 
- * Encode bytes directly to RGB pixels (24-bit color)
- * Returns Uint8Array of RGBA values (width * height * 4)
+/**
+ * Encode bytes directly to RGB pixels (24-bit color).
+ * Returns a Uint8Array of width × height × 3 bytes (RGB24, no alpha).
+ * Zero-fills any tail pixels so the frame count is always predictable.
  */
 export function encodeToPixels(
   data: Uint8Array,
   width: number,
-  height: number,
-  paddingColor: Color = { r: 0, g: 0, b: 0 }
+  height: number
 ): Uint8Array {
   const pixels = new Uint8Array(width * height * 3);
+  const max = data.length;
   let dataIndex = 0;
 
   for (let i = 0; i < width * height; i++) {
     const pixelIndex = i * 3;
-
-    if (dataIndex < data.length) {
-      // We have data for at least R
-      pixels[pixelIndex] = data[dataIndex++]; // R
-
-      // G
-      if (dataIndex < data.length) {
-        pixels[pixelIndex + 1] = data[dataIndex++];
-      } else {
-        pixels[pixelIndex + 1] = paddingColor.g;
-      }
-
-      // B
-      if (dataIndex < data.length) {
-        pixels[pixelIndex + 2] = data[dataIndex++];
-      } else {
-        pixels[pixelIndex + 2] = paddingColor.b;
-      }
-    } else {
-      // Padding pixel (black)
-      pixels[pixelIndex] = paddingColor.r;
-      pixels[pixelIndex + 1] = paddingColor.g;
-      pixels[pixelIndex + 2] = paddingColor.b;
-    }
+    pixels[pixelIndex] = dataIndex < max ? data[dataIndex++] : 0;
+    pixels[pixelIndex + 1] = dataIndex < max ? data[dataIndex++] : 0;
+    pixels[pixelIndex + 2] = dataIndex < max ? data[dataIndex++] : 0;
   }
 
   return pixels;
 }
 
-/** 
- * Decode RGB pixels (from RGBA buffer) back to bytes
+/**
+ * Decode RGB pixels back to bytes. Stops once `originalDataLength` is reached.
  */
 export function decodeFromPixels(
   pixels: Uint8Array,
@@ -54,22 +32,19 @@ export function decodeFromPixels(
   const data = new Uint8Array(originalDataLength);
   let dataIndex = 0;
 
-  // Process each pixel
   for (let i = 0; i < pixels.length; i += 3) {
     if (dataIndex >= originalDataLength) break;
-    data[dataIndex++] = pixels[i];     // R
-
+    data[dataIndex++] = pixels[i];
     if (dataIndex >= originalDataLength) break;
-    data[dataIndex++] = pixels[i + 1]; // G
-
+    data[dataIndex++] = pixels[i + 1];
     if (dataIndex >= originalDataLength) break;
-    data[dataIndex++] = pixels[i + 2]; // B
+    data[dataIndex++] = pixels[i + 2];
   }
 
   return data;
 }
 
-/** Calculate required frames for 24-bit mode (3 bytes per pixel) */
+/** Calculate required frames for 24-bit mode (3 bytes per pixel). */
 export function calculateRequiredFrames24Bit(
   dataLength: number,
   pixelsPerFrame: number

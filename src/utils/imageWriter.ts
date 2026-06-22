@@ -1,4 +1,3 @@
-import sharp from "sharp";
 import { join } from "path";
 
 /** Read raw RGBA frames (efficient path for True Color) - Reads all into memory */

@@ -1,6 +1,10 @@
-/** Checksum utilities using CRC32 and SHA-256 */
+/**
+ * Checksum utilities: CRC32 (in-memory) and SHA-256 (streaming or in-memory).
+ */
 
-/** Calculate CRC32 checksum */
+import { createHash } from "crypto";
+
+/** Calculate CRC32 checksum of a buffer. */
 export function crc32(data: Uint8Array): number {
   let crc = 0xffffffff;
   const table = makeCRC32Table();
@@ -12,10 +16,8 @@ export function crc32(data: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-/** Generate CRC32 lookup table */
 function makeCRC32Table(): Uint32Array {
   const table = new Uint32Array(256);
-
   for (let i = 0; i < 256; i++) {
     let c = i;
     for (let j = 0; j < 8; j++) {
@@ -23,43 +25,25 @@ function makeCRC32Table(): Uint32Array {
     }
     table[i] = c;
   }
-
   return table;
 }
 
-/** Calculate SHA-256 checksum (hex string) */
+/** Calculate SHA-256 checksum of a buffer (hex string). */
 export async function sha256(data: Uint8Array): Promise<string> {
   const hashBuffer = await crypto.subtle.digest("SHA-256", data.buffer as ArrayBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-/** Calculate checksum as hex string */
+/** Calculate checksum as hex string. */
 export async function calculateChecksum(data: Uint8Array): Promise<string> {
   return await sha256(data);
 }
 
-/** Verify checksum */
-export async function verifyChecksum(
-  data: Uint8Array,
-  expectedChecksum: string
-): Promise<boolean> {
-  if (expectedChecksum === "NONE" || expectedChecksum === "N/A") {
-    return true;
-  }
-  const actualChecksum = await calculateChecksum(data);
-  return actualChecksum === expectedChecksum;
-}
-
-/** Stateful checksum verification for streams */
+/** Stateful streaming SHA-256 for use on `ReadableStream` chunks. */
 export class StreamingChecksum {
-  private hash: any;
-
-  constructor() {
-    // Dynamically require crypto to avoid bundling issues if not needed
-    const { createHash } = require("crypto");
-    this.hash = createHash("sha256");
-  }
+  private hash = createHash("sha256");
 
   update(chunk: Uint8Array): void {
     this.hash.update(chunk);

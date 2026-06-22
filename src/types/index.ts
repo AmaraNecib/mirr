@@ -1,28 +1,34 @@
-// Core type definitions for the visual file storage system
+/**
+ * mirr public types.
+ *
+ * Only the types that callers and tests actually use. Internal implementation
+ * types (palettes, blocks, etc.) are not exported — the project is True Color
+ * only and never touches that path.
+ */
 
-/** RGB color representation */
-export interface Color {
-  r: number;
-  g: number;
-  b: number;
-  a?: number;
+import type { EncryptionService } from "../core/encryption.ts";
+
+/** RSA public + private key pair as PEM strings. */
+export interface EncryptionKeys {
+  publicKey?: string;
+  privateKey?: string;
 }
 
-/** Color palette configuration */
-export interface ColorPalette {
-  colors: Color[];
-  size: number;
+/** Encoding configuration recorded in the video header. */
+export interface EncodingConfig {
+  /** Always 0 — True Color, no quantization. */
+  paletteSize: number;
+  /** Always 1 — one byte per pixel channel. */
+  blockSize: number;
+  frameWidth: number;
+  frameHeight: number;
+  /** When true, the payload was encrypted with hybrid RSA + AES-GCM. */
+  encrypted: boolean;
+  compressed: boolean;
+  version: number;
 }
 
-/** Visual block (NxN pixels with same color) */
-export interface VisualBlock {
-  x: number;
-  y: number;
-  size: number;
-  color: Color;
-}
-
-/** File metadata */
+/** File metadata recorded in the video header. */
 export interface FileMetadata {
   name: string;
   size: number;
@@ -32,18 +38,7 @@ export interface FileMetadata {
   modifiedAt: Date;
 }
 
-/** Encoding configuration */
-export interface EncodingConfig {
-  paletteSize: number;
-  blockSize: number;
-  frameWidth: number;
-  frameHeight: number;
-  encrypted: boolean;
-  compressed: boolean;
-  version: number;
-}
-
-/** Global header structure */
+/** Top-level video header. */
 export interface GlobalHeader {
   magic: Uint8Array;
   version: number;
@@ -53,43 +48,61 @@ export interface GlobalHeader {
   headerSize: number;
 }
 
-/** Encoding options from CLI */
+/** Codec accepted by the FFmpeg writer. */
+export type VideoCodec = "libx264rgb" | "libx265" | "ffv1";
+
+/** Options for the encode engine. */
 export interface EncodeOptions {
   inputFile: string;
   outputPath: string;
-  encrypt: boolean;
-  paletteSize: number;
-  blockSize: number;
+  compress: boolean;
+  outputFormat: "video";
+  fps: number;
   frameWidth: number;
   frameHeight: number;
-  compress: boolean;
-  outputFormat: 'video' | 'frames' | 'single-image';
-  fps?: number;
-  threads?: number;
   showProgress: boolean;
   keepFrames: boolean;
   mimeType?: string;
-  codec?: 'libx265' | 'ffv1';
+  codec: VideoCodec;
+  /** When true, encrypt the payload with hybrid RSA + AES-GCM before encoding. */
+  encrypt: boolean;
+  /** Injected by the engine so the pipeline doesn't create its own. */
+  encryptionService?: EncryptionService | null;
+  /**
+   * Original size in bytes BEFORE the engine's archive step (directories only).
+   * When set, this is used in the metadata instead of the archive file size.
+   */
+  originalSize?: number;
+  /** Display name for the original (pre-archive) input, e.g. the directory name. */
+  originalName?: string;
 }
 
-/** Decoding options from CLI */
+/** Options for the decode engine. */
 export interface DecodeOptions {
   inputPath: string;
-  outputPath: string; // Stay with outputPath as it's more descriptive for potentially multiple files
-  extract?: boolean;   // Stay with extract as it's shorter
+  outputPath: string;
+  /** undefined → auto-extract for archives; false → always write raw; true → always extract. */
+  extract: boolean | undefined;
   paletteSize: number;
   blockSize: number;
-  threads?: number;
   showProgress: boolean;
+  /**
+   * If true, stop after decryption; do not decompress.
+   * Output = the raw compressed bytes (decrypted, but still Brotli-compressed).
+   * Use this to inspect the compressed form or to re-archive without re-compressing.
+   */
+  keepCompressed?: boolean;
 }
 
-/** Encryption keys */
-export interface EncryptionKeys {
-  publicKey: string;
-  privateKey: string;
+/** Result returned by the encode/decode engine. */
+export interface EngineResult {
+  success: boolean;
+  /** Path to the produced output (file or directory; array for multi-part). */
+  data?: string | string[];
+  error?: string;
 }
 
-/** Pipeline result */
+/** Legacy result type used by the pipeline internally. */
 export interface PipelineResult<T> {
   success: boolean;
   data?: T;

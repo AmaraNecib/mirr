@@ -36,7 +36,7 @@ export async function createArchive(inputPath: string): Promise<ArchiveResult> {
     console.log(`Large file detected (${(stats.size / 1024 / 1024 / 1024).toFixed(2)}GB), splitting into chunks...`);
 
     const fs = await import("fs");
-    const tempDir = join(process.cwd(), `.cftff-temp-${Date.now()}`);
+    const tempDir = join(process.cwd(), `.mirr-temp-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
     const fileName = inputPath.split(/[/\\]/).pop() || "file";
@@ -84,7 +84,7 @@ async function createArchiveWithCheckpoints(inputPath: string): Promise<ArchiveR
   const fs = await import("fs");
 
   // Use current directory for temp files to avoid running out of space
-  const tempDir = join(process.cwd(), `.cftff-temp-${Date.now()}`);
+  const tempDir = join(process.cwd(), `.mirr-temp-${Date.now()}`);
 
   try {
     // Create temp directory for checkpoints
@@ -94,15 +94,13 @@ async function createArchiveWithCheckpoints(inputPath: string): Promise<ArchiveR
     const entryInfos: { path: string; size: number; isDirectory: boolean; fullPath?: string }[] = [];
     await collectEntryInfo(inputPath, inputPath, entryInfos);
 
-    console.log(`Processing ${entryInfos.length} entries in checkpoints...`);
-
     const encoder = new TextEncoder();
 
     // Calculate final archive size ahead of time
     let finalSize = 4; // entry count
     for (const info of entryInfos) {
       const pathBytes = encoder.encode(info.path);
-      // Overhead: pathLen(4) + path + isDir(1) + dataLen(4)
+      // Per-entry: pathLen(4) + path + isDir(1) + dataLen(4) + data
       finalSize += 4 + pathBytes.length + 1 + 4 + info.size;
     }
 
@@ -124,8 +122,8 @@ async function createArchiveWithCheckpoints(inputPath: string): Promise<ArchiveR
     for (const info of entryInfos) {
       const pathBytes = encoder.encode(info.path);
 
-      // Prepare Entry Metadata: pathLen(4) + path + isDir(1) + dataLen(8 for 64-bit)
-      const metaSize = 4 + pathBytes.length + 1 + 8;
+      // Per-entry: pathLen(4) + path + isDir(1) + dataLen(4) — matches deserializeArchive
+      const metaSize = 4 + pathBytes.length + 1 + 4;
       const metaBuffer = new Uint8Array(metaSize);
       const view = new DataView(metaBuffer.buffer);
 
@@ -136,8 +134,8 @@ async function createArchiveWithCheckpoints(inputPath: string): Promise<ArchiveR
       offset += pathBytes.length;
       view.setUint8(offset, info.isDirectory ? 1 : 0);
       offset += 1;
-      view.setBigUint64(offset, BigInt(info.size), false);
-      offset += 8;
+      view.setUint32(offset, info.size, false);
+      offset += 4;
 
       // Write Metadata
       await new Promise<void>((resolve, reject) => {
@@ -168,12 +166,8 @@ async function createArchiveWithCheckpoints(inputPath: string): Promise<ArchiveR
       }
     }
 
-    console.log(`\nTotal data written: ${(totalWritten / 1024 / 1024).toFixed(2)}MB`);
-
     // Close stream
     await new Promise<void>((resolve) => finalStream.end(() => resolve()));
-
-    console.log(`Archive created: ${(finalSize / 1024 / 1024).toFixed(2)}MB`);
 
     // Return file path
     return { type: 'file', path: finalFile, size: finalSize };

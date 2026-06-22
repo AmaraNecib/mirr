@@ -1,25 +1,45 @@
 {
-  "name": "cftff",
-  "version": "2.0.0",
-  "description": "Convert Files To Frames/Files - Encode any file as video",
-  "main": "src/cli.ts",
+  "name": "mirr",
+  "version": "3.0.0",
+  "description": "Project any file or directory into a lossless, optionally-encrypted video — and read it back bit-exact.",
+  "type": "module",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "bin": {
+    "mirr": "./src/cli.ts"
+  },
   "scripts": {
-    "encode": "bun --expose-gc src/encode.ts",
-    "decode": "bun --expose-gc src/decode.ts",
-    "cli": "bun --expose-gc run src/cli.ts",
-    "help": "bun run src/cli.ts --help"
+    "mirr": "bun --expose-gc src/cli.ts",
+    "encode": "bun --expose-gc src/cli.ts encode",
+    "decode": "bun --expose-gc src/cli.ts decode",
+    "help": "bun --expose-gc src/cli.ts --help",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "keywords": [
+    "mirr",
     "video",
     "encoding",
-    "steganography",
+    "compression",
     "data-storage",
-    "file-to-video"
+    "lossless",
+    "true-color",
+    "ffv1"
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AmaraNecib/mirr.git"
+  },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
   },
   "engines": {
     "bun": ">=1.0.0"
